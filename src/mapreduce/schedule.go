@@ -56,26 +56,26 @@ func (mr *Master) schedule(phase jobPhase) {
 				fmt.Printf("task %v , phase %v , nios %v \n", i, phase, nios)
 				registerChannel := <- mr.registerChannel
 				go func(tasknumber int, nios int, phase jobPhase, registerChannel string){
-				fmt.Printf("registerChannel %v \n", registerChannel)
-				taskmode_array[i].tasknumber = i
-				taskmode_array[i].mode = 1
-				taskmode_array[i].workername = registerChannel
-				isDone := call(registerChannel, "Worker.DoTask", &DoTaskArgs{mr.jobName, mr.files[tasknumber], phase, tasknumber, nios}, &struct{}{})
-				fmt.Printf("task %v is %v\n", i, isDone)
-				if(isDone){
-				go func(){
-					mr.registerChannel <- registerChannel
-					fmt.Printf("registerChannel %v go back to channel\n", registerChannel)
-					taskmode_array[i].mode = 2
-					fmt.Printf("task %v done\n", i)
-					allDone = isAllDone(taskmode_array, ntasks)
-				}()
-				}else{
-					go func(){
-						taskmode_array[i].mode = 0
-						fmt.Printf("task %v failed! re assigned\n", i)	
-						allDone = isAllDone(taskmode_array, ntasks)						
-					}()
+					fmt.Printf("registerChannel %v \n", registerChannel)
+					taskmode_array[i].tasknumber = i
+					taskmode_array[i].mode = 1
+					taskmode_array[i].workername = registerChannel
+					isDone := call(registerChannel, "Worker.DoTask", &DoTaskArgs{mr.jobName, mr.files[tasknumber], phase, tasknumber, nios}, &struct{}{})
+					fmt.Printf("task %v is %v\n", i, isDone)
+					if(isDone){
+						go func(){
+							mr.registerChannel <- registerChannel
+							fmt.Printf("registerChannel %v go back to channel\n", registerChannel)
+							taskmode_array[i].mode = 2
+							fmt.Printf("task %v done\n", i)
+							allDone = isAllDone(taskmode_array, ntasks)
+						}()
+					}else{
+						go func(){
+							taskmode_array[i].mode = 0
+							fmt.Printf("task %v failed! re assigned\n", i)	
+							allDone = isAllDone(taskmode_array, ntasks)						
+						}()
 					}	
 				}(i, nios, phase, registerChannel)
 			}	
