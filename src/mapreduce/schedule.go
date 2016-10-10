@@ -70,14 +70,20 @@ func (mr *Master) schedule(phase jobPhase) {
 						fmt.Printf("task %v done\n", i)
 					}else{
 						taskmode_array[i].mode = 0
-						fmt.Printf("task %v failed\n", i)
+						fmt.Printf("task %v failed! re assigned\n", i)
 					}	
 				}(i, nios, phase, registerChannel)
-
-				allDone = isAllDone(taskmode_array, ntasks)
-				fmt.Printf("isAllDone ? %v\n", allDone)
 			}
-		}		
+		}	
+		allDone = isAllDone(taskmode_array, ntasks)
+		if(!allDone){
+			for i := 0; i < ntasks; i++{
+				if(taskmode_array[i].mode != 2){
+					fmt.Printf("task %v has not done yet\n", i)
+				}
+			}
+		}
+		fmt.Printf("isAllDone ? %v\n", allDone)	
 	}
 
 
