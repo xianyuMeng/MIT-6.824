@@ -51,12 +51,14 @@ type RegisterArgs struct {
 func call(srv string, rpcname string,
 	args interface{}, reply interface{}) bool {
 	c, errx := rpc.Dial("unix", srv)
+	//Dial(network, address string) (*client, error)
 	if errx != nil {
 		return false
 	}
 	defer c.Close()
 
 	err := c.Call(rpcname, args, reply)
+	//(client *Client) Call(serviceMethod string, args interface{}, reply interface{}) error
 	if err == nil {
 		return true
 	}

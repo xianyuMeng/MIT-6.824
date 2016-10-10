@@ -34,6 +34,7 @@ func (mr *Master) Register(args *RegisterArgs, _ *struct{}) error {
 	defer mr.Unlock()
 	debug("Register: worker %s\n", args.Worker)
 	mr.workers = append(mr.workers, args.Worker)
+	//record how to put worker into register channel
 	go func() {
 		mr.registerChannel <- args.Worker
 	}()

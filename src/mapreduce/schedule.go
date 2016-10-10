@@ -1,7 +1,12 @@
 package mapreduce
 
 import "fmt"
-
+type TaskMode struct{
+	tasknumber int
+	mode int
+	//0 for not assigned, 1 for being processed, 2 for done
+	workername string
+}
 // schedule starts and waits for all tasks in the given phase (Map or Reduce).
 func (mr *Master) schedule(phase jobPhase) {
 	var ntasks int
@@ -24,5 +29,69 @@ func (mr *Master) schedule(phase jobPhase) {
 	//
 	// TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO
 	//
+
+	//dynamic allocate a bool array and init
+	//var isTaskDone = make( []bool, ntasks)
+	var tasksmode = make(chan TaskMode)
+	var taskmode_array = make([]TaskMode, ntasks)
+	// error : v declared and not used 
+	// for _, v := range isTaskDone {
+	// 	v = false
+	// }
+	for i := 0; i < ntasks; i++{
+		taskmode_array[i].mode = 0
+	}
+	var allDone bool
+	//allDone is initialize to false
+	if !allDone {
+		for i := 0; i < ntasks; i++ {
+			if taskmode_array[i].mode == 2 || taskmode_array[i].mode == 1 {
+				continue
+				//the task i is done or being processed 
+			}else {
+				fmt.Printf("task %v , phase %v , nios %v \n", i, phase, nios)
+				registerChannel := <- mr.registerChannel
+				taskmode_array[i].tasknumber = i
+				taskmode_array[i].mode = 1
+				taskmode_array[i].workername = registerChannel
+				tk := taskmode_array[i]
+				tasksmode <- tk
+				go scheduleParallel(mr, phase , nios, tk, tasksmode)
+				result := <- tasksmode
+				if(result.mode == 2){
+					go func(){
+						mr.registerChannel <- registerChannel
+						taskmode_array[i].mode = 2
+					}()
+				}
+				allDone = isAllDone(taskmode_array, ntasks)
+			}
+		}		
+	}
+
+
 	fmt.Printf("Schedule: %v phase done\n", phase)
+}
+
+func isAllDone(taskmode_array [] TaskMode, ntasks int) bool {
+	var allDone bool
+	allDone = true
+	for i := 0; i < ntasks; i++{
+		if taskmode_array[i].mode != 2 {
+			allDone = false
+		}
+	}
+	return allDone
+}
+
+
+
+func scheduleParallel(mr *Master, phase jobPhase, nios int, t TaskMode, tk chan TaskMode){
+	isDone := call(t.workername, "Worker.DoTask", &DoTaskArgs{mr.jobName, mr.files[t.tasknumber], phase, t.tasknumber, nios}, struct{}{})
+	if(isDone){
+		t.mode = 2
+	}else{
+		t.mode = 0
+	}
+	tk <- t
 }
