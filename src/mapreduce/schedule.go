@@ -2,7 +2,6 @@ package mapreduce
 
 import (
 	"fmt"
-	//"sync"
 	)
 type TaskMode struct{
 	tasknumber int
@@ -36,7 +35,7 @@ func (mr *Master) schedule(phase jobPhase) {
 	//dynamic allocate a bool array and init
 	//var isTaskDone = make( []bool, ntasks)
 	//var tasksmode = make(chan TaskMode)
-	var taskmode_array = make([]TaskMode, ntasks)
+	var taskmode_array = make([]TaskMode, ntasks + 1)
 	// error : v declared and not used 
 	// for _, v := range isTaskDone {
 	// 	v = false
@@ -46,47 +45,60 @@ func (mr *Master) schedule(phase jobPhase) {
 	}
 	var allDone bool
 	//allDone is initialize to false
-	if !allDone {
-		for i := 0; i < ntasks; i++ {
-			if taskmode_array[i].mode == 2 || taskmode_array[i].mode == 1 {
+	for{
+		allDone = true
+		for i := 0; i < ntasks; i+=1 {
+			if taskmode_array[i].mode == 2 || taskmode_array[i].mode == 1{
 				continue
 				//the task i is done or being processed 
-			}else {
+			}else{
+				allDone = false
 				fmt.Printf("task %v , phase %v , nios %v \n", i, phase, nios)
 				registerChannel := <- mr.registerChannel
 				go func(tasknumber int, nios int, phase jobPhase, registerChannel string){
-					fmt.Printf("registerChannel %v \n", registerChannel)
-					taskmode_array[i].tasknumber = i
-					taskmode_array[i].mode = 1
-					taskmode_array[i].workername = registerChannel
-					isDone := call(registerChannel, "Worker.DoTask", &DoTaskArgs{mr.jobName, mr.files[tasknumber], phase, tasknumber, nios}, &struct{}{})
-					fmt.Printf("task %v is %v\n", i, isDone)
-					if(isDone){
-						go func(){
-							mr.registerChannel <- registerChannel
-							fmt.Printf("registerChannel %v go back to channel\n", registerChannel)
-						}()
-						taskmode_array[i].mode = 2
-						fmt.Printf("task %v done\n", i)
-					}else{
+				fmt.Printf("registerChannel %v \n", registerChannel)
+				taskmode_array[i].tasknumber = i
+				taskmode_array[i].mode = 1
+				taskmode_array[i].workername = registerChannel
+				isDone := call(registerChannel, "Worker.DoTask", &DoTaskArgs{mr.jobName, mr.files[tasknumber], phase, tasknumber, nios}, &struct{}{})
+				fmt.Printf("task %v is %v\n", i, isDone)
+				if(isDone){
+				go func(){
+					mr.registerChannel <- registerChannel
+					fmt.Printf("registerChannel %v go back to channel\n", registerChannel)
+					taskmode_array[i].mode = 2
+					fmt.Printf("task %v done\n", i)
+					allDone = isAllDone(taskmode_array, ntasks)
+				}()
+				}else{
+					go func(){
 						taskmode_array[i].mode = 0
-						fmt.Printf("task %v failed! re assigned\n", i)
+						fmt.Printf("task %v failed! re assigned\n", i)	
+						allDone = isAllDone(taskmode_array, ntasks)						
+					}()
 					}	
 				}(i, nios, phase, registerChannel)
-			}
-		}	
-		allDone = isAllDone(taskmode_array, ntasks)
-		if(!allDone){
-			for i := 0; i < ntasks; i++{
-				if(taskmode_array[i].mode != 2){
-					fmt.Printf("task %v has not done yet\n", i)
+			}	
+			
+			if(!allDone){
+				for i := 0; i < ntasks; i++{
+					if(taskmode_array[i].mode != 2){
+						fmt.Printf("task %v has not done yet\n", i)
+					}
 				}
 			}
 		}
-		fmt.Printf("isAllDone ? %v\n", allDone)	
+		fmt.Printf("isAllDone ? %v\n", allDone)
+		if allDone{
+			break
+		}			
 	}
 
-
+	for i := 0; i < ntasks; i++{
+		if(taskmode_array[i].mode != 2){
+			fmt.Printf("task %v has not done yet\n", i)
+		}
+	}
 	fmt.Printf("Schedule: %v phase done\n", phase)
 }
 
