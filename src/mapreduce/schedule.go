@@ -38,7 +38,7 @@ func (mr *Master) schedule(phase jobPhase) {
 	//var isTaskDone = make( []bool, ntasks)
 	//var tasksmode = make(chan TaskMode)
 	var taskmode_array = make([]TaskMode, ntasks+1)
-	allDone := true
+	allDone := false
 	// error : v declared and not used
 	// for _, v := range isTaskDone {
 	// 	v = false
@@ -57,6 +57,7 @@ func (mr *Master) schedule(phase jobPhase) {
 		//     3. Call the worker. When it's done, update the task mode and clean up.
 		// ZW: TIPS:
 		//     1. Use debug function. Check common.go and set debugEnabled to true.
+		allDone = true
 		for i := 0; i < ntasks; i += 1 {
 			if taskmode_array[i].mode == 2 || taskmode_array[i].mode == 1 {
 				//the task i is done or being processed
@@ -108,18 +109,19 @@ func (mr *Master) schedule(phase jobPhase) {
 
 					// ZW: This is ok. But try to initialize DoTaskArgs first and then call.
 					//     Line should be short and concise.
-					var dotaskargs DoTaskArgs
-					dotaskargs.JobName = mr.jobName
-					dotaskargs.File = mr.files[tasknumber]
-					dotaskargs.Phase = phase
-					dotaskargs.TaskNumber = i
-					dotaskargs.NumOtherPhase = nios
-					isDone := call(registerChannel, "Worker.DoTask", &dotaskargs, &struct{}{})
-					fmt.Printf("task %v is %v\n", i, isDone)
-					taskmode_array[i].mode = 2
+					args := DoTaskArgs {
+						mr.jobName,
+						mr.files[tasknumber], 
+						phase, 
+						tasknumber, 
+						nios,
+					}
+					isDone := call(registerChannel, "Worker.DoTask", &args, &struct{}{})
+					fmt.Printf("task %v is %v\n", tasknumber, isDone)
 					// ZW: So far, so good. But the following code is truly mysterious...
 
 					if isDone {
+						taskmode_array[tasknumber].mode = 2;
 						go func() {
 							// ZW: Yes you are right, use a go routine to return the worker, since
 							//     it will block if there is no consumer.
@@ -135,12 +137,13 @@ func (mr *Master) schedule(phase jobPhase) {
 					} else {
 						// ZW: You donot need a go routine here, nothing will block it right?
 						//     Simply update the task array.
-							taskmode_array[i].mode = 0
-							fmt.Printf("task %v failed! re assigned\n", i)
-
-							// ZW: Remove this line.
+							taskmode_array[tasknumber].mode = 0
+							fmt.Printf("task %v failed! re assigned\n", tasknumber)
 					}
 				}(i) // ZW:  No arguments here except i.
+			}
+			if(allDone){
+				break
 			}
 		}
 	}
