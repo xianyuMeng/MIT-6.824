@@ -22,11 +22,7 @@ import "labrpc"
 
 import "bytes"
 import "encoding/gob"
-import "log"
 import "fmt"
-import "io/ioutil"
-import "io"
-import "os"
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -84,20 +80,12 @@ type Raft struct {
 
 	applyMsgch chan ApplyMsg
 
-	logger *log.Logger
 	// Your data here.
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
 }
 
-func GetLoggerWriter() io.Writer {
-	if enable_log := os.Getenv("GOLAB_ENABLE_LOG"); enable_log != "" {
-		return os.Stderr
-	} else {
-		return ioutil.Discard
-	}
-}
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
@@ -105,7 +93,7 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	
-	fmt.Printf("this is %v in peers, getting state...\n current term is %v... is Leader ? %v", rf.me, rf.currentTerm, rf.state)
+	fmt.Printf("this is %v in peers, getting state...\n current term is %v... is Leader ? %v\n", rf.me, rf.currentTerm, rf.state)
 	rf.mu.Lock()
 
 	term = rf.currentTerm
@@ -189,7 +177,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 	defer rf.persist()
 
-	rf.logger.Printf("Got vote request: %v, may grant vote: %v\n", args)
+	fmt.Printf("Got vote request: %v, may grant vote: %v\n", args)
 	//Reply false if term < currentTerm
 	//If votedFor is null or candidateId, 
 	//and candidate’s log is at least as up-to-date as receiver’s log, 
@@ -202,7 +190,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 			}
 		}
 	}
-	rf.logger.Printf("grantVote value is %v\n", grantVote)
+	fmt.Printf("grantVote value is %v\n", grantVote)
 
 	if(args.term < rf.currentTerm){
 		reply.voteGranted = false
@@ -284,13 +272,13 @@ func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *Request
 			var reply RequestVoteReply
 			ok = rf.peers[p].Call("Raft.RequestVote", request, &reply)
 
-			rf.logger.Printf("Call peers : %v\n", ok)
+			fmt.Printf("Call peers : %v\n", ok)
 
 			if ok {
 				if(reply.term < rf.currentTerm){
-					rf.logger.Printf("Not accept this reply\n")
+					fmt.Printf("Not accept this reply\n")
 				}else{
-					rf.logger.Printf("other candidate's term is larger, become Follower\n")
+					fmt.Printf("other candidate's term is larger, become Follower\n")
 					rf.currentTerm = reply.term
 					rf.state = Follower
 					rf.votedFor = -1
@@ -299,7 +287,7 @@ func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *Request
 				if(reply.voteGranted && rf.state == Candidate){
 					rf.voteCount ++
 					if(rf.voteCount > (len(rf.peers) / 2 + 1)){
-						rf.logger.Printf("Got majority of votes, become Leader\n")
+						fmt.Printf("Got majority of votes, become Leader\n")
 						rf.state = Leader
 						for i := 0; i < len(rf.peers); i += 1{
 							//for each server, 
@@ -386,7 +374,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-	rf.logger = log.New(GetLoggerWriter(), fmt.Sprintf("[Node %v] ", me), log.LstdFlags)
 	
 	fmt.Printf("Make %v\n", me)
 	// Your initialization code here.
