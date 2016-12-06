@@ -20,9 +20,9 @@ package raft
 import "sync"
 import "labrpc"
 
-// import "bytes"
-// import "encoding/gob"
-
+import "bytes"
+import "encoding/gob"
+import "log"
 
 
 //
@@ -40,12 +40,47 @@ type ApplyMsg struct {
 //
 // A Go object implementing a single Raft peer.
 //
+
+type State int
+//Within a constant declaration, the predeclared identifier iota represents successive untyped integer constants. It is reset to 0 whenever the reserved word const appears in the source and increments after each ConstSpec. It can be used to construct a set of related constants:
+//just like enum-type in C++
+const (
+	Follower State = iota
+	Candidate State = iota
+	Leader State = iota
+)
+
+type LogEntry struct {
+	log_command interface{}
+	//command to be executed by the replicated state machine
+	log_term int
+}
+
 type Raft struct {
 	mu        sync.Mutex
 	peers     []*labrpc.ClientEnd
 	persister *Persister
 	me        int // index into peers[]
+	
+	//current state
+	state State
 
+	//persistent state on all servers
+	currentTerm int
+	votedFor int
+	logEntry []LogEntry
+	
+	//volatile state on all servers
+	commitIndex int
+	lastApplied int
+
+	//volatile state on leaders
+	nextIndex []int
+	matchIndex []int
+
+	applyMsgch chan ApplyMsg
+
+	logger *log.Logger
 	// Your data here.
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
@@ -58,7 +93,14 @@ func (rf *Raft) GetState() (int, bool) {
 
 	var term int
 	var isleader bool
+	
+	rf.mu.Lock()
+
+	term = rf.currentTerm
+	isleader = (rf.state == Leader)
 	// Your code here.
+	//unlock mu until term and isleader are returned
+	defer  rf.mu.Unlock()
 	return term, isleader
 }
 
@@ -70,12 +112,18 @@ func (rf *Raft) GetState() (int, bool) {
 func (rf *Raft) persist() {
 	// Your code here.
 	// Example:
-	// w := new(bytes.Buffer)
-	// e := gob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+	w := new(bytes.Buffer)
+	e := gob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.logEntry)
+	if(rf.currentTerm > 0) {
+		//currentTerm is initialized to 0 on first boot，单调增
+		e.Encode(rf.logEntry[rf.currentTerm - 1].log_term)
+	}
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
+
 }
 
 //
@@ -84,10 +132,16 @@ func (rf *Raft) persist() {
 func (rf *Raft) readPersist(data []byte) {
 	// Your code here.
 	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := gob.NewDecoder(r)
-	// d.Decode(&rf.xxx)
-	// d.Decode(&rf.yyy)
+	buf := rf.persister.ReadRaftState()
+	if(buf == nil){
+		return 
+	}
+	r := bytes.NewBuffer(data)
+	d := gob.NewDecoder(r)
+	d.Decode(&rf.currentTerm)
+	d.Decode(&rf.votedFor)
+	d.Decode(&rf.logEntry)
+
 }
 
 
@@ -98,6 +152,10 @@ func (rf *Raft) readPersist(data []byte) {
 //
 type RequestVoteArgs struct {
 	// Your data here.
+	term int
+	candidateId int
+	lastLogIndex int
+	lastLogTerm int
 }
 
 //
@@ -105,6 +163,8 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here.
+	term int
+	voteGranted bool
 }
 
 //
@@ -112,6 +172,53 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here.
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	rf.logger.Printf("Got vote request: %v, may grant vote: %v\n", args)
+	//Reply false if term < currentTerm
+	//If votedFor is null or candidateId, 
+	//and candidate’s log is at least as up-to-date as receiver’s log, 
+	//grant vote 
+	var grantVote bool
+	if((rf.votedFor == -1 || rf.votedFor == args.candidateId)){
+		if(len(rf.logEntry) > 0){
+			if(rf.logEntry[len(rf.logEntry) - 1].log_term == args.lastLogTerm){
+				grantVote = true
+			}
+		}
+	}
+	rf.logger.Printf("grantVote value is %v\n", grantVote)
+	
+	if(args.term < rf.currentTerm){
+		reply.voteGranted = false
+		reply.term = rf.currentTerm
+		return
+	}
+	if(args.term > rf.currentTerm){
+		rf.currentTerm = args.term
+		rf.state = Follower
+		rf.votedFor = -1
+		if(len(rf.logEntry) > 0){
+			if(rf.logEntry[len(rf.logEntry)-1].log_term < args.lastLogTerm ){
+				rf.votedFor = args.candidateId
+				rf.persist()
+			}			
+		}
+		reply.voteGranted = grantVote
+		reply.term = rf.currentTerm
+		return
+
+	}
+	if(args.term == rf.currentTerm){
+		rf.votedFor = args.candidateId
+		rf.persist()
+		reply.voteGranted = grantVote
+		reply.term = rf.currentTerm
+		return
+	}
+
 }
 
 //
