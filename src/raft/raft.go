@@ -68,6 +68,7 @@ type Raft struct {
 	//persistent state on all servers
 	currentTerm int
 	votedFor int
+	voteCount int
 	logEntry []LogEntry
 	
 	//volatile state on all servers
@@ -172,9 +173,10 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here.
-
+	//当follower变成candidate时，给集群内其他人同时发requestvote RPCs
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 
 	rf.logger.Printf("Got vote request: %v, may grant vote: %v\n", args)
 	//Reply false if term < currentTerm
@@ -190,7 +192,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 		}
 	}
 	rf.logger.Printf("grantVote value is %v\n", grantVote)
-	
+
 	if(args.term < rf.currentTerm){
 		reply.voteGranted = false
 		reply.term = rf.currentTerm
@@ -239,7 +241,71 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 // the struct itself.
 //
 func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	defer rf.persist()
+
+	var request RequestVoteArgs
+	if(len(rf.logEntry) > 0){
+		request = RequestVoteArgs{
+			term:             rf.currentTerm,
+			candidateId:      rf.me,
+			lastLogIndex:     len(rf.logEntry) - 1,
+			lastLogTerm:      rf.logEntry[len(rf.logEntry) - 1].log_term,
+		}
+	} else {
+		request = RequestVoteArgs{
+			term: rf.currentTerm,
+			candidateId: rf.me,
+			lastLogTerm: 1,
+			lastLogIndex: 0,
+		}
+	}
+
+
+	var ok bool
+
+	for peer := 0; peer < len(rf.peers); peer += 1 {
+		if peer == rf.me {
+			continue
+		}
+		go func(p int) {
+			var reply RequestVoteReply
+			ok = rf.peers[p].Call("Raft.RequestVote", request, &reply)
+
+			rf.logger.Printf("Call peers : %v\n", ok)
+
+			if ok {
+				if(reply.term < rf.currentTerm){
+					rf.logger.Printf("Not accept this reply\n")
+				}else{
+					rf.logger.Printf("other candidate's term is larger, become Follower\n")
+					rf.currentTerm = reply.term
+					rf.state = Follower
+					rf.votedFor = -1
+					rf.persist()
+				}
+				if(reply.voteGranted && rf.state == Candidate){
+					rf.voteCount ++
+					if(rf.voteCount > (len(rf.peers) / 2 + 1)){
+						rf.logger.Printf("Got majority of votes, become Leader\n")
+						rf.state = Leader
+						for i := 0; i < len(rf.peers); i += 1{
+							//for each server, 
+							//index of the next log entry to send to that server 
+							//(initialized to leader last log index + 1)
+							rf.nextIndex[i] = len(rf.logEntry)
+							//for each server, index of highest log entry known to be replicated on server 
+							//(initialized to 0, increases monotonically)
+							rf.matchIndex[i] = 0
+						}
+					}
+				}
+			}
+		}(peer)
+	}
+
+
 	return ok
 }
 
