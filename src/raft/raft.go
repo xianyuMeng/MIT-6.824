@@ -23,7 +23,10 @@ import "labrpc"
 import "bytes"
 import "encoding/gob"
 import "log"
-
+import "fmt"
+import "io/ioutil"
+import "io"
+import "os"
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -88,6 +91,13 @@ type Raft struct {
 
 }
 
+func GetLoggerWriter() io.Writer {
+	if enable_log := os.Getenv("GOLAB_ENABLE_LOG"); enable_log != "" {
+		return os.Stderr
+	} else {
+		return ioutil.Discard
+	}
+}
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
@@ -95,6 +105,7 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	
+	fmt.Printf("this is %v in peers, getting state...\n current term is %v... is Leader ? %v", rf.me, rf.currentTerm, rf.state)
 	rf.mu.Lock()
 
 	term = rf.currentTerm
@@ -324,12 +335,28 @@ func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *Request
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	index := -1
 	term := -1
-	isLeader := true
+	isLeader := rf.state == Leader
 
+	if(rf.state != Leader){
+		isLeader = false
+		return index, term, isLeader
+	}else{
+		index = len(rf.logEntry)
+		term = rf.currentTerm
+		tmp := LogEntry{
+			log_term: term,
+			log_command: command,
+		}
+		rf.logEntry = append(rf.logEntry, tmp)
+		rf.persist()
+	}
 
-	return index, term, isLeader
+	//first index is 1
+	return index + 1, term, isLeader
 }
 
 //
@@ -359,12 +386,21 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-
+	rf.logger = log.New(GetLoggerWriter(), fmt.Sprintf("[Node %v] ", me), log.LstdFlags)
+	
+	fmt.Printf("Make %v\n", me)
 	// Your initialization code here.
+	rf.state = Follower
+	rf.currentTerm = 0
+	rf.votedFor = -1
+	rf.logEntry = make([]LogEntry, 0)
+
+	rf.nextIndex = make([]int, len(peers))
+	rf.matchIndex = make([]int, len(peers))
+	rf.applyMsgch = applyCh
 
 	// initialize from state persisted before a crash
-	rf.readPersist(persister.ReadRaftState())
-
-
+	rf.readPersist(rf.persister.ReadRaftState())
+	
 	return rf
 }
