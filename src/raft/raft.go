@@ -24,6 +24,21 @@ import "bytes"
 import "encoding/gob"
 import "fmt"
 
+import "time"
+import "math/rand"
+
+const (
+	//Raft uses randomized election timeouts to ensure that 
+	//split votes are rare and that they are resolved quickly.
+	//To prevent split votes in the first place, 
+	//election timeouts are chosen randomly from a fixed interval 
+	//(e.g., 150–300ms)
+	MAX_TIMEOUT = 300 * time.Millisecond
+	MIN_TIMEOUT = 150 * time.Millisecond
+	HEARTBEATS = 50 * time.Millisecond
+)
+
+
 //
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -80,6 +95,7 @@ type Raft struct {
 
 	applyMsgch chan ApplyMsg
 
+	timer *time.Timer
 	// Your data here.
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
@@ -93,7 +109,7 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	
-	fmt.Printf("this is %v in peers, getting state...\n current term is %v... is Leader ? %v\n", rf.me, rf.currentTerm, rf.state)
+	fmt.Printf("this is %v in peers, getting state...\n current term is %v... state is  %v\n", rf.me, rf.currentTerm, rf.state)
 	rf.mu.Lock()
 
 	term = rf.currentTerm
@@ -121,6 +137,7 @@ func (rf *Raft) persist() {
 		//currentTerm is initialized to 0 on first boot，单调增
 		e.Encode(rf.logEntry[rf.currentTerm - 1].log_term)
 	}
+	fmt.Printf("this is %v, vote for %v\n", rf, rf.votedFor)
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 
@@ -145,7 +162,26 @@ func (rf *Raft) readPersist(data []byte) {
 }
 
 
+func (rf *Raft) RandomizeTimeout (){
+	if(rf.timer == nil){
+		rf.timer = time.NewTimer(time.Hour)
+	}
+	if !rf.timer.Stop(){
+		<- rf.timer.C
+	}
+	
+	var timeout int64
+	if rf.state != Leader{
+		timeout = random(int64(MIN_TIMEOUT), int64(MAX_TIMEOUT))
+	}
+	fmt.Printf("the time out is %v\n", timeout)
+	rf.timer.Reset(time.Duration(timeout))	
+} 
 
+func random(min int64, max int64) int64{
+	rand.Seed(time.Now().Unix())
+	return (rand.Int63n(max - min)) + min
+}
 
 //
 // example RequestVote RPC arguments structure.
@@ -388,6 +424,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// initialize from state persisted before a crash
 	rf.readPersist(rf.persister.ReadRaftState())
-	
+	rf.RandomizeTimeout()
 	return rf
 }
