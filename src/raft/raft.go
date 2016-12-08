@@ -98,7 +98,9 @@ type Raft struct {
 	timer *time.Timer
 
 	//if rf is a follower, it will get heartbeat in every heartbeat_inteval
-	hearbeat chan bool
+	heartbeat   chan bool
+	isleader    chan bool
+	iscandidate chan bool
 	// Your data here.
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
@@ -138,9 +140,9 @@ func (rf *Raft) persist() {
 	e.Encode(rf.logEntry)
 	if rf.currentTerm > 0 {
 		//currentTerm is initialized to 0 on first boot，单调增
-		e.Encode(rf.logEntry[rf.currentTerm-1])
+		e.Encode(rf.logEntry)
 	}
-	fmt.Printf("this is %v, vote for %v\n", rf.me, rf.votedFor)
+
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 
@@ -152,15 +154,12 @@ func (rf *Raft) persist() {
 func (rf *Raft) readPersist(data []byte) {
 	// Your code here.
 	// Example:
-	buf := rf.persister.ReadRaftState()
-	if buf == nil {
-		return
-	}
 	r := bytes.NewBuffer(data)
 	d := gob.NewDecoder(r)
 	d.Decode(&rf.currentTerm)
 	d.Decode(&rf.votedFor)
 	d.Decode(&rf.logEntry)
+
 }
 
 func (rf *Raft) RandomizeTimeout() {
@@ -211,32 +210,35 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here.
 	//当follower变成candidate时，给集群内其他人同时发requestvote RPCs
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	fmt.Printf("this is %v... got request from %v\n", rf.me, args.candidateId)
 	defer rf.persist()
+	defer rf.mu.Unlock()
+
 
 	//Reply false if term < currentTerm
 	//If votedFor is null or candidateId,
 	//and candidate’s log is at least as up-to-date as receiver’s log,
 	//grant vote
 	var grantVote bool
-	if rf.votedFor == -1 || rf.votedFor == args.candidateId {
-		if len(rf.logEntry) > 0 {
-			if rf.logEntry[len(rf.logEntry)-1].log_term == args.lastLogTerm {
-				grantVote = true
-			}
+	if len(rf.logEntry) > 0 {
+		if rf.logEntry[len(rf.logEntry)-1].log_term > args.term ||
+			(rf.logEntry[len(rf.logEntry)-1].log_term == args.lastLogTerm && len(rf.logEntry) > args.lastLogIndex) {
+			grantVote = false
 		}
 	}
-	fmt.Printf("grantVote value is %v\n", grantVote)
+	fmt.Printf("%v reject %v...grantVote value is %v\n", rf.me, args.candidateId, grantVote)
 
 	if args.term < rf.currentTerm {
 		reply.voteGranted = false
 		reply.term = rf.currentTerm
+		fmt.Printf("candidate term is %v, current term is %v, grantVote is false because rf term is ahead\n", args.term, rf.currentTerm)
 		return
 	}
 	if args.term > rf.currentTerm {
 		rf.currentTerm = args.term
 		rf.state = Follower
-		rf.votedFor = -1
+		rf.isleader <- false
+		rf.votedFor = args.candidateId
 		if len(rf.logEntry) > 0 {
 			if rf.logEntry[len(rf.logEntry)-1].log_term < args.lastLogTerm {
 				rf.votedFor = args.candidateId
@@ -251,7 +253,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	if args.term == rf.currentTerm {
 		rf.votedFor = args.candidateId
 		rf.persist()
-		reply.voteGranted = grantVote
+		reply.voteGranted = rf.votedFor == args.candidateId
 		reply.term = rf.currentTerm
 		return
 	}
@@ -277,8 +279,6 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 //
 func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *RequestVoteReply) bool {
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	defer rf.persist()
 
 	var request RequestVoteArgs
 	if len(rf.logEntry) > 0 {
@@ -296,7 +296,10 @@ func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *Request
 			lastLogIndex: 0,
 		}
 	}
-	fmt.Printf("this is %v Sending requestVote RPCs ...\n", rf.me)
+	fmt.Printf("this is %v Sending requestVote RPCs ...term is %v\n", rf.me, rf.currentTerm)
+
+	rf.persist()
+	rf.mu.Unlock()
 	/*
 		candidate 的状态在以下终止
 		1, 赢得选举：在一个term内赢得多数票
@@ -307,12 +310,13 @@ func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *Request
 	*/
 	var ok bool
 
-	for peer := 0; peer < len(rf.peers); peer += 1 {
+	for peer := 0; peer < len(rf.peers); peer = peer + 1 {
 		if peer == rf.me {
 			continue
 		}
 		go func(p int) {
 			var reply RequestVoteReply
+			fmt.Printf("candidate %v term is %v...Now sending requestVote \n", rf.me, request.term)
 			ok = rf.peers[p].Call("Raft.RequestVote", request, &reply)
 
 			fmt.Printf("Call peers : %v\n", ok)
@@ -329,8 +333,10 @@ func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *Request
 				}
 				if reply.voteGranted && rf.state == Candidate {
 					rf.voteCount++
+					fmt.Printf("this is %v...having %v votes", rf.me, rf.voteCount)
 					if rf.voteCount > (len(rf.peers)/2 + 1) {
 						fmt.Printf("Got majority of votes, become Leader\n")
+						rf.isleader <- true
 						rf.state = Leader
 						for i := 0; i < len(rf.peers); i += 1 {
 							//for each server,
@@ -367,13 +373,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	index := -1
-	term := -1
+	term := rf.currentTerm
 	isLeader := rf.state == Leader
-
-	if rf.state != Leader {
-		isLeader = false
-		return index, term, isLeader
-	} else {
+	fmt.Printf("this is %v ... Start \n", rf.me)
+	if isLeader {
 		index = len(rf.logEntry)
 		term = rf.currentTerm
 		tmp := LogEntry{
@@ -421,11 +424,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.state = Follower
 	rf.currentTerm = 0
 	rf.votedFor = -1
+	rf.voteCount = 0
 	rf.logEntry = append(rf.logEntry, LogEntry{log_term: 0})
 	//rf.hearbeat <- false
 
-	rf.nextIndex = make([]int, len(peers))
-	rf.matchIndex = make([]int, len(peers))
+	rf.nextIndex = make([]int, len(peers)+1)
+	rf.matchIndex = make([]int, len(peers)+1)
 	rf.applyMsgch = applyCh
 
 	// initialize from state persisted before a crash
@@ -437,7 +441,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			switch rf.state {
 			case Follower:
 				select {
-				case <-rf.hearbeat:
+				case <-rf.heartbeat:
 				//if follower gets heartbeat, indicates that the leader works fine
 				case <-time.After(HEARTBEATS):
 					{
@@ -466,6 +470,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 					rf.voteCount = 1
 					rf.persist()
 					rf.mu.Unlock()
+					fmt.Printf("this is %v...current term is %v...having %v votes\n", rf.me, rf.currentTerm, rf.voteCount)
 					request := RequestVoteArgs{
 						term:        rf.currentTerm,
 						candidateId: rf.me,
@@ -480,6 +485,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 					var reply RequestVoteReply
 					rf.sendRequestVote(rf.me, request, &reply)
+					select {
+					case <-rf.heartbeat:
+						rf.state = Follower
+					case <-rf.isleader:
+					}
 				}
 			}
 		}
