@@ -430,15 +430,18 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// initialize from state persisted before a crash
 	rf.readPersist(rf.persister.ReadRaftState())
-	rf.RandomizeTimeout()
+	//rf.RandomizeTimeout()
 
 	switch rf.state {
 	case Follower:
 		select {
 		case <-rf.hearbeat:
 		//if follower gets heartbeat, indicates that the leader works fine
-		case <-time.After(HEARTBEATS):
+		case <-time.After(HEARTBEATS):{
 			rf.state = Candidate
+			fmt.Printf("follower become candidate\n")
+		}
+
 		}
 	case Leader:
 		{
@@ -473,8 +476,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			}
 
 			var reply RequestVoteReply
-			rf.sendRequestVote(rf.me, request, &reply)
-
+			go rf.sendRequestVote(rf.me, request, &reply)
+			rf.mu.Unlock()
 		}
 	}
 
