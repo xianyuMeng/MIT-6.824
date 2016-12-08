@@ -136,7 +136,6 @@ func (rf *Raft) persist() {
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
 	e.Encode(rf.logEntry)
-	e.Encode(rf.votes)
 	if rf.currentTerm > 0 {
 		//currentTerm is initialized to 0 on first boot，单调增
 		e.Encode(rf.logEntry[rf.currentTerm-1].log_term)
@@ -162,7 +161,6 @@ func (rf *Raft) readPersist(data []byte) {
 	d.Decode(&rf.currentTerm)
 	d.Decode(&rf.votedFor)
 	d.Decode(&rf.logEntry)
-	d.Decode(&rf.votes)
 }
 
 func (rf *Raft) RandomizeTimeout() {
@@ -299,6 +297,14 @@ func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *Request
 		}
 	}
 
+	/*
+		candidate 的状态在以下终止
+		1, 赢得选举：在一个term内赢得多数票
+		2, 另一个candidate宣布自己当选（收到来自新leader的AppendEntriesRPC 和 hearbeat）
+			(1)如果新leader的term 比自己大， 承认新leader的地位
+			(2)反之，拒绝并继续当candidate
+		3, 一段时间过后没有赢家
+	*/
 	var ok bool
 
 	for peer := 0; peer < len(rf.peers); peer += 1 {
@@ -436,9 +442,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		}
 	case Leader:
 		{
-			time.Sleep(HEARTBEATS)
+			//time.Sleep(HEARTBEATS)
 		}
-	case Candidat:
+	case Candidate:
 		{
 
 			/*
@@ -454,14 +460,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			rf.voteCount = 1
 			rf.persist()
 			rf.mu.Unlock()
-			rf.sendRequestVote()
 			request := RequestVoteArgs{
 				term:        rf.currentTerm,
 				candidateId: rf.me,
 			}
-			if len(rf.LogEntry) > 0 {
-				request.lastLogIndex = len(rf.LogEntry) - 1
-				request.lastLogTerm = rf.logEntry[len(rf.LogEntry)-1].log_term
+			if len(rf.logEntry) > 0 {
+				request.lastLogIndex = len(rf.logEntry) - 1
+				request.lastLogTerm = rf.logEntry[len(rf.logEntry)-1].log_term
 			} else {
 				request.lastLogIndex = 0
 				request.lastLogTerm = 1
@@ -469,14 +474,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 			var reply RequestVoteReply
 			rf.sendRequestVote(rf.me, request, &reply)
-			/*
-				candidate 的状态在以下终止
-				1, 赢得选举：在一个term内赢得多数票
-				2, 另一个candidate宣布自己当选（收到来自新leader的AppendEntriesRPC 和 hearbeat）
-					(1)如果新leader的term 比自己大， 承认新leader的地位
-					(2)反之，拒绝并继续当candidate
-				3, 一段时间过后没有赢家
-			*/
 
 		}
 	}
