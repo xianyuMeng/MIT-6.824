@@ -138,9 +138,9 @@ func (rf *Raft) persist() {
 	e.Encode(rf.logEntry)
 	if rf.currentTerm > 0 {
 		//currentTerm is initialized to 0 on first boot，单调增
-		e.Encode(rf.logEntry[rf.currentTerm-1].log_term)
+		e.Encode(rf.logEntry[rf.currentTerm-1])
 	}
-	fmt.Printf("this is %v, vote for %v\n", rf, rf.votedFor)
+	fmt.Printf("this is %v, vote for %v\n", rf.me, rf.votedFor)
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 
@@ -296,7 +296,7 @@ func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *Request
 			lastLogIndex: 0,
 		}
 	}
-
+	fmt.Printf("this is %v Sending requestVote RPCs ...\n", rf.me)
 	/*
 		candidate 的状态在以下终止
 		1, 赢得选举：在一个term内赢得多数票
@@ -336,7 +336,7 @@ func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *Request
 							//for each server,
 							//index of the next log entry to send to that server
 							//(initialized to leader last log index + 1)
-							rf.nextIndex[i] = len(rf.logEntry)
+							rf.nextIndex[i] = len(rf.logEntry) - 1
 							//for each server, index of highest log entry known to be replicated on server
 							//(initialized to 0, increases monotonically)
 							rf.matchIndex[i] = 0
@@ -421,8 +421,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.state = Follower
 	rf.currentTerm = 0
 	rf.votedFor = -1
-	rf.logEntry = make([]LogEntry, 0)
-	rf.hearbeat <- false
+	rf.logEntry = append(rf.logEntry, LogEntry{log_term: 0})
+	//rf.hearbeat <- false
 
 	rf.nextIndex = make([]int, len(peers))
 	rf.matchIndex = make([]int, len(peers))
@@ -432,54 +432,58 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.readPersist(rf.persister.ReadRaftState())
 	//rf.RandomizeTimeout()
 
-	switch rf.state {
-	case Follower:
-		select {
-		case <-rf.hearbeat:
-		//if follower gets heartbeat, indicates that the leader works fine
-		case <-time.After(HEARTBEATS):{
-			rf.state = Candidate
-			fmt.Printf("follower become candidate\n")
-		}
+	go func() {
+		for {
+			switch rf.state {
+			case Follower:
+				select {
+				case <-rf.hearbeat:
+				//if follower gets heartbeat, indicates that the leader works fine
+				case <-time.After(HEARTBEATS):
+					{
+						rf.state = Candidate
+						fmt.Printf("follower become candidate\n")
+					}
 
-		}
-	case Leader:
-		{
-			//time.Sleep(HEARTBEATS)
-		}
-	case Candidate:
-		{
+				}
+			case Leader:
+				{
+					//time.Sleep(HEARTBEATS)
+				}
+			case Candidate:
+				{
 
-			/*
-				follower成为candidate之后
-				1, increaments its current term
-				2, change to candidate state
-				3, 投票给自己
-				4, 给集群内其他人同时issue RequestVote RPCs
-			*/
-			rf.mu.Lock()
-			rf.currentTerm++
-			rf.votedFor = rf.me
-			rf.voteCount = 1
-			rf.persist()
-			rf.mu.Unlock()
-			request := RequestVoteArgs{
-				term:        rf.currentTerm,
-				candidateId: rf.me,
+					/*
+						follower成为candidate之后
+						1, increaments its current term
+						2, change to candidate state
+						3, 投票给自己
+						4, 给集群内其他人同时issue RequestVote RPCs
+					*/
+					rf.mu.Lock()
+					rf.currentTerm++
+					rf.votedFor = rf.me
+					rf.voteCount = 1
+					rf.persist()
+					rf.mu.Unlock()
+					request := RequestVoteArgs{
+						term:        rf.currentTerm,
+						candidateId: rf.me,
+					}
+					if len(rf.logEntry) > 0 {
+						request.lastLogIndex = len(rf.logEntry) - 1
+						request.lastLogTerm = rf.logEntry[len(rf.logEntry)-1].log_term
+					} else {
+						request.lastLogIndex = 0
+						request.lastLogTerm = 1
+					}
+
+					var reply RequestVoteReply
+					rf.sendRequestVote(rf.me, request, &reply)
+				}
 			}
-			if len(rf.logEntry) > 0 {
-				request.lastLogIndex = len(rf.logEntry) - 1
-				request.lastLogTerm = rf.logEntry[len(rf.logEntry)-1].log_term
-			} else {
-				request.lastLogIndex = 0
-				request.lastLogTerm = 1
-			}
-
-			var reply RequestVoteReply
-			go rf.sendRequestVote(rf.me, request, &reply)
-			rf.mu.Unlock()
 		}
-	}
+	}()
 
 	return rf
 }
