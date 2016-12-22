@@ -21,7 +21,7 @@ import "sync"
 import "labrpc"
 import "time"
 import "math/rand"
-import "fmt"
+//import "fmt"
 // import "bytes"
 // import "encoding/gob"
 
@@ -106,7 +106,7 @@ func (rf *Raft) debug(format string, a ...interface{}) (n int, err error) {
     copy(a[3:], a[0:])
     a[0] = rf.me
     a[1] = rf.currentTerm
-    a[2] = &rf.state
+    a[2] = rf.state
     n, err = DPrintf("Raft %v Term %v as %v " + format, a...)
     return
 }
@@ -138,8 +138,9 @@ func (rf *Raft) readPersist(data []byte) {
 //
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
     // Your code here.
+    rf.debug("got request from %v\n", args.CandidateId)
     rf.mu.Lock()
-    fmt.Printf("this is %v... got request from %v\n", rf.me, args.CandidateId)
+
     defer rf.persist()
     defer rf.mu.Unlock()
 
@@ -148,14 +149,11 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
     //If votedFor is null or candidateId,
     //and candidate’s log is at least as up-to-date as receiver’s log,
     //grant vote
-    grantVote := true
-
-    fmt.Printf("%v got request from %v...grantVote value is %v\n", rf.me, args.CandidateId, grantVote)
 
     if args.Term < rf.currentTerm {
         reply.VoteGranted = false
         reply.Term = rf.currentTerm
-        fmt.Printf("candidate term is %v, current term is %v, grantVote is false because rf term is ahead\n", args.Term, rf.currentTerm)
+        rf.debug("candidate term is %v, current term is %v, grantVote is false because rf term is ahead\n", args.Term, rf.currentTerm)
         return
     }
     
@@ -238,12 +236,17 @@ func (rf *Raft)RequestAppendEntry(args AppendEntryArgs, reply *AppendEntryReply)
 
     // 2. Update my term and lastTime and set to follower.
     // what should we do to votedFor?
-    rf.lastTime = time.Now()
     if args.Term != rf.currentTerm {
         rf.votedFor = -1
     }
+
+    if rf.state != Follower {
+        rf.debug("getting AppendEntry RPC... %v's term is %v ...I'm Follower now\n", args.LeaderId, args.Term)
+    }
     rf.currentTerm = args.Term
     rf.state = Follower
+    rf.lastTime = time.Now()
+
     // 3. Check my logs, is rf.logs[args.PrevLogIndex] == args.PrevLogTerm?
     //    if not, reject.
     if rf.logs[args.PrevLogIndex].Term != args.PrevLogTerm {
@@ -389,6 +392,7 @@ func (rf *Raft) elect() {
                             rf.currentTerm = reply.Term
                             rf.votedFor = -1
                             rf.lastTime = time.Now()
+                            rf.debug("reset lastTime to %v\n", rf.lastTime)
                             rf.mu.Unlock()
                         }
                         voteCh <- reply.VoteGranted
@@ -410,7 +414,7 @@ func (rf *Raft) elect() {
         }
     }
     
-    fmt.Printf("this is %v having %v votes\n", rf.me, voteCount)
+    rf.debug("having %v votes\n", voteCount)
     if voteCount > (len(rf.peers) / 2 ) && rf.state == Candidate && rf.currentTerm == request.Term {
         rf.mu.Lock()
         rf.state = Leader
@@ -418,16 +422,21 @@ func (rf *Raft) elect() {
             rf.nextIndex[i] = rf.logs[len(rf.logs) - 1].Index + 1
             rf.matchIndex[i] = 0
         }
-        go rf.sendHeartBeat()
+
+        go rf.sendHeartBeat(request.Term)
         rf.mu.Unlock()
     }
 }
 
-func (rf *Raft) sendHeartBeat() {
+func (rf *Raft) sendHeartBeat(leaderTerm int) {
     for{
         
         // Lock.
         rf.mu.Lock()
+        if rf.state != Leader || rf.currentTerm != leaderTerm {
+            rf.mu.Unlock()
+            return
+        }
         // Fill in the args.
         for N := rf.commitIndex + 1; N <= rf.logs[len(rf.logs) - 1].Index; N++ {
             cnt := 1
@@ -470,6 +479,7 @@ func (rf *Raft) sendHeartBeat() {
                 PrevLogTerm : rf.logs[rf.nextIndex[peer] - 1].Term,
                 PrevLogIndex : rf.logs[rf.nextIndex[peer] - 1].Index,
             }
+            //rf.debug("sending heartbeat... length of Entries is %v\n", len(heartbeat.Entries))
             copy(heartbeat.Entries, rf.logs[rf.nextIndex[peer]:])
             
             go func (p int, heartbeat AppendEntryArgs){
@@ -512,6 +522,7 @@ func (rf *Raft) sendHeartBeat() {
                         }
 
                     case <- time.After(100 * time.Millisecond):
+                        //rf.debug("Now is %v, After 100 Millisecond\n", time.Now())
                 }
             } (peer, heartbeat)
         }
