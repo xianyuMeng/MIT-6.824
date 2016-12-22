@@ -228,15 +228,55 @@ func (rf *Raft)RequestAppendEntry(args AppendEntryArgs, reply *AppendEntryReply)
     rf.mu.Lock()
     defer rf.mu.Unlock()
 
-    // Check if args.Term < rf.currentTerm
-    // Reject append.
+    // 1. if args.Term < curcurrentTerm, reject.
+
     if args.Term < rf.currentTerm{
         reply.Term = rf.currentTerm
         reply.Success = false
-    }else{
-        rf.lastTime = time.Now()
-        reply.Success = true
+        return
     }
+
+    // 2. Update my term and lastTime and set to follower.
+    // what should we do to votedFor?
+    rf.lastTime = time.Now()
+    if args.Term != rf.currentTerm {
+        rf.votedFor = -1
+    }
+    rf.currentTerm = args.Term
+    rf.state = Follower
+    // 3. Check my logs, is rf.logs[args.PrevLogIndex] == args.PrevLogTerm?
+    //    if not, reject.
+    if rf.logs[args.PrevLogIndex].Term != args.PrevLogTerm {
+        reply.Term = rf.currentTerm
+        reply.Success = false
+        return
+    }
+    // 4. Append args.Entries to my logs, starting from prevlogindex.
+    rf.logs = rf.logs[0:args.PrevLogIndex + 1]
+    rf.logs = append(rf.logs, args.Entries...)
+
+    // 5. Check args.LeaderCommit and commit my logs.
+    //    For every new commit entry, send an ApplyMsg to applyCh
+    //???
+    tmpCommitIndex := rf.commitIndex
+    if args.LeaderCommit > rf.commitIndex {
+        if args.LeaderCommit > rf.logs[len(rf.logs) - 1].Index {
+            rf.commitIndex = rf.logs[len(rf.logs) - 1].Index
+        } else {
+            rf.commitIndex = args.LeaderCommit
+        }
+        for i := tmpCommitIndex + 1; i <= rf.commitIndex; i++ {
+            msg := ApplyMsg{
+                Index : i,
+                Command : rf.logs[i].Command,
+                UseSnapshot : false,
+            }
+            rf.applyCh <- msg            
+        }
+    }
+    reply.Success = true
+    reply.Term = rf.currentTerm
+    return
 }
 func (rf *Raft) electionTimer() {
     for {
@@ -385,26 +425,99 @@ func (rf *Raft) elect() {
 
 func (rf *Raft) sendHeartBeat() {
     for{
+        
+        // Lock.
+        rf.mu.Lock()
         // Fill in the args.
-        heartbeat := AppendEntryArgs{
-        Term: rf.currentTerm,
-        LeaderId: rf.me,
+        for N := rf.commitIndex + 1; N <= rf.logs[len(rf.logs) - 1].Index; N++ {
+            cnt := 1
+            for p := 0; p < len(rf.matchIndex); p++ {
+                if p == rf.me {
+                    continue
+                }
+                if rf.matchIndex[p] >= N {
+                    cnt ++
+                }
+            }
+            if cnt > len(rf.matchIndex) / 2 {
+                if rf.logs[N].Index == rf.currentTerm {
+                    for commit := rf.commitIndex + 1; commit <= N; commit++ {
+                        msg := ApplyMsg {
+                            Index : commit,
+                            Command : rf.logs[commit].Command,
+                            UseSnapshot : false,
+                        }
+                        rf.applyCh <- msg
+                    }
+                    rf.commitIndex = N
+                }
+            }
         }
+
         for peer := 0; peer < len(rf.peers); peer++{
-            go func (p int){
+            
+            if peer == rf.me {
+                continue
+            }
+            // Prepare the args for this follower
+            // For each followewr, send entries [nextIndex[peer], end]
+            // Here make a deep copy of the sending entries to avoid race condition.
+            heartbeat := AppendEntryArgs {
+                Term: rf.currentTerm,
+                LeaderId: rf.me,
+                Entries: make([]LogEntry, len(rf.logs[rf.nextIndex[peer]:])),
+                LeaderCommit : rf.commitIndex,
+                PrevLogTerm : rf.logs[rf.nextIndex[peer] - 1].Term,
+                PrevLogIndex : rf.logs[rf.nextIndex[peer] - 1].Index,
+            }
+            copy(heartbeat.Entries, rf.logs[rf.nextIndex[peer]:])
+            
+            go func (p int, heartbeat AppendEntryArgs){
                 var reply AppendEntryReply
                 okchan := make(chan bool)
                 go func(){
                     okchan <- rf.sendAppendEntry(p, heartbeat, &reply)
                 }()
                 select{
-                    case  <- okchan :
+                    // We get the reply.
+                    case  ok := <- okchan :
+                        // if ok
+                        // 1. if reply.Term > rf.currentTerm, update term and change back to follower
+                        // 2. if succeed, update matchIndex and nextIndex
+                        // 3. if failed, decrease nextIndex by 1
+                        if ok {
+                            rf.mu.Lock()
+                            defer rf.mu.Unlock()
+                            if reply.Term > rf.currentTerm {
+                                // Whatelse do we have to do here?
+                                // Check elect.
+                                rf.state = Follower
+                                rf.currentTerm = reply.Term
+                                rf.lastTime = time.Now()
+                                rf.votedFor = -1
+                                return
+                            }
+                            if reply.Success {
+                                // You do not have to update nextIndex amd matchIndex 
+                                // if heartbeat is emtpy
+                                if len(heartbeat.Entries) > 0 {
+                                    rf.nextIndex[p] += len(heartbeat.Entries)
+                                    rf.matchIndex[p] = heartbeat.Entries[len(heartbeat.Entries) - 1].Index
+                                }
+                                return
+                            }
+                            if rf.nextIndex[p] > 1 {
+                                rf.nextIndex[p]--                                        
+                            }
+                        }
 
                     case <- time.After(100 * time.Millisecond):
                 }
-            } (peer)
+            } (peer, heartbeat)
         }
 
+        // Unlock
+        rf.mu.Unlock()
         time.Sleep(time.Duration(100 * time.Millisecond))
     }
 }
@@ -424,12 +537,21 @@ func (rf *Raft) sendHeartBeat() {
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-    index := -1
-    term := -1
-    isLeader := true
+    rf.mu.Lock()
+    defer rf.mu.Unlock()
 
+    if rf.state != Leader {
+        return -1, -1, false
+    }
 
-    return index, term, isLeader
+    log := LogEntry {
+        Index : rf.logs[len(rf.logs) - 1].Index + 1,
+        Command : command,
+        Term : rf.currentTerm,
+    }
+    rf.logs = append(rf.logs, log)
+
+    return rf.logs[len(rf.logs) - 1].Index, rf.currentTerm, rf.state == Leader
 }
 
 //
