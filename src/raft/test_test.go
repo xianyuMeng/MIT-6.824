@@ -65,16 +65,16 @@ func TestReElection(t *testing.T) {
 	time.Sleep(2 * RaftElectionTimeout)
 	cfg.checkNoLeader()
 
-	fmt.Printf("no leader should be elected\n")
+	//fmt.Printf("no leader should be elected\n")
 
 	// if a quorum arises, it should elect a leader.
 	cfg.connect((leader2 + 1) % servers)
 	cfg.checkOneLeader()
-	fmt.Printf("if a quorum arises, it should elect a leader.")
+	//fmt.Printf("if a quorum arises, it should elect a leader.")
 	// re-join of last node shouldn't prevent leader from existing.
 	cfg.connect(leader2)
 	cfg.checkOneLeader()
-	fmt.Printf("re-join of last node shouldn't prevent leader from existing")
+	//fmt.Printf("re-join of last node shouldn't prevent leader from existing")
 	fmt.Printf("  ... Passed\n")
 }
 
