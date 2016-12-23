@@ -22,8 +22,8 @@ import "labrpc"
 import "time"
 import "math/rand"
 //import "fmt"
-// import "bytes"
-// import "encoding/gob"
+import "bytes"
+import "encoding/gob"
 
 
 
@@ -113,12 +113,13 @@ func (rf *Raft) debug(format string, a ...interface{}) (n int, err error) {
 func (rf *Raft) persist() {
     // Your code here.
     // Example:
-    // w := new(bytes.Buffer)
-    // e := gob.NewEncoder(w)
-    // e.Encode(rf.xxx)
-    // e.Encode(rf.yyy)
-    // data := w.Bytes()
-    // rf.persister.SaveRaftState(data)
+    w := new(bytes.Buffer)
+    e := gob.NewEncoder(w)
+    e.Encode(rf.currentTerm)
+    e.Encode(rf.votedFor)
+    e.Encode(rf.logs)
+    data := w.Bytes()
+    rf.persister.SaveRaftState(data)
 }
 
 //
@@ -127,10 +128,15 @@ func (rf *Raft) persist() {
 func (rf *Raft) readPersist(data []byte) {
     // Your code here.
     // Example:
-    // r := bytes.NewBuffer(data)
-    // d := gob.NewDecoder(r)
-    // d.Decode(&rf.xxx)
-    // d.Decode(&rf.yyy)
+    if len(data) == 0 {
+        return
+    }
+    r := bytes.NewBuffer(data)
+
+    d := gob.NewDecoder(r)
+    d.Decode(&rf.currentTerm)
+    d.Decode(&rf.votedFor)
+    d.Decode(&rf.logs)
 }
 
 //
@@ -141,8 +147,10 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
     //rf.debug("got request from %v\n", args.CandidateId)
     rf.mu.Lock()
 
-    defer rf.persist()
-    defer rf.mu.Unlock()
+    defer func(){
+            rf.persist()
+            rf.mu.Unlock()
+        }()
 
 
     //Reply false if term < currentTerm
@@ -224,8 +232,10 @@ func (rf *Raft)sendAppendEntry(server int, args AppendEntryArgs, reply * AppendE
 
 func (rf *Raft)RequestAppendEntry(args AppendEntryArgs, reply *AppendEntryReply) {
     rf.mu.Lock()
-    defer rf.mu.Unlock()
-
+    defer func(){
+            rf.persist()
+            rf.mu.Unlock()
+        }()
     // 1. if args.Term < curcurrentTerm, reject.
 
     if args.Term < rf.currentTerm{
@@ -251,11 +261,20 @@ func (rf *Raft)RequestAppendEntry(args AppendEntryArgs, reply *AppendEntryReply)
     //    if not, reject.
     if args.PrevLogIndex > rf.logs[len(rf.logs) - 1].Index {
         reply.Term = rf.currentTerm
+        reply.ReplyIndex = rf.logs[len(rf.logs) - 1].Index + 1
         reply.Success = false
         return
     }
     if rf.logs[args.PrevLogIndex].Term != args.PrevLogTerm {
         reply.Term = rf.currentTerm
+
+        for i := 0; i < len(rf.logs); i++ {
+            if rf.logs[i].Term == rf.logs[args.PrevLogIndex].Term {
+                reply.ReplyIndex = rf.logs[i].Index
+                //rf.debug("reply Index is %v\n", reply.ReplyIndex)
+                break
+            }
+        }
         reply.Success = false
         return
     }
@@ -335,6 +354,7 @@ type AppendEntryArgs struct{
 type AppendEntryReply struct{
     Term int
     Success bool
+    ReplyIndex int
 }
 
 // Send vote request to every one.
@@ -356,6 +376,7 @@ func (rf *Raft) elect() {
         LastLogTerm     : rf.logs[len(rf.logs)-1].Term,
     }
     
+    rf.persist()
     rf.mu.Unlock()
     
     voteCh := make(chan bool)
@@ -398,6 +419,7 @@ func (rf *Raft) elect() {
                             rf.votedFor = -1
                             rf.lastTime = time.Now()
                             //rf.debug("reset lastTime to %v\n", rf.lastTime)
+                            rf.persist()
                             rf.mu.Unlock()
                         }
                         voteCh <- reply.VoteGranted
@@ -513,6 +535,7 @@ func (rf *Raft) sendHeartBeat(leaderTerm int) {
                                 rf.currentTerm = reply.Term
                                 rf.lastTime = time.Now()
                                 rf.votedFor = -1
+                                rf.persist()
                                 return
                             }
                             if reply.Success {
@@ -526,12 +549,13 @@ func (rf *Raft) sendHeartBeat(leaderTerm int) {
                                 return
                             }
                             if rf.nextIndex[p] > 1 {
-                                rf.nextIndex[p]--                                        
+                                // rf.nextIndex[p]--                                        
+                                rf.nextIndex[p] = reply.ReplyIndex
                             }
                         }
 
                     case <- time.After(100 * time.Millisecond):
-                        ////rf.debug("Now is %v, After 100 Millisecond\n", time.Now())
+                        //rf.debug("Now is %v, After 100 Millisecond\n", time.Now())
                 }
             } (peer, heartbeat)
         }
@@ -558,7 +582,10 @@ func (rf *Raft) sendHeartBeat(leaderTerm int) {
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
     rf.mu.Lock()
-    defer rf.mu.Unlock()
+    defer func(){
+            rf.persist()
+            rf.mu.Unlock()
+        }()
 
     if rf.state != Leader {
         return -1, -1, false
@@ -570,7 +597,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
         Term : rf.currentTerm,
     }
     rf.logs = append(rf.logs, log)
-    rf.debug("Index is %v\n", rf.logs[len(rf.logs) - 1].Index)
+    //rf.debug("Index is %v\n", rf.logs[len(rf.logs) - 1].Index)
 
     return rf.logs[len(rf.logs) - 1].Index, rf.currentTerm, rf.state == Leader
 }
