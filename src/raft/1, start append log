@@ -1,0 +1,7 @@
+1, start append log
+2, send heartbeat
+3, follower reply
+4, leader update matchindex
+5, leader commit
+6, leader send commitindex to follower
+7, follower receive heartbeat

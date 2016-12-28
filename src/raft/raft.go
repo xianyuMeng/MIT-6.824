@@ -158,13 +158,14 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
     //and candidate’s log is at least as up-to-date as receiver’s log,
     //grant vote
 
+
     if args.Term < rf.currentTerm {
         reply.VoteGranted = false
         reply.Term = rf.currentTerm
         //rf.debug("candidate term is %v, current term is %v, grantVote is false because rf term is ahead\n", args.Term, rf.currentTerm)
         return
     }
-    
+
     // if args.Term > rf.currentTerm
     // change back to follower and update rf.currentTerm
     if args.Term > rf.currentTerm {
@@ -186,6 +187,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
         if rf.votedFor == -1 || rf.votedFor ==args.CandidateId {
             reply.VoteGranted = true
             reply.Term = rf.currentTerm
+            rf.votedFor = args.CandidateId
             return
         }
     } else if rf.logs[len(rf.logs) - 1].Term == args.LastLogTerm {
@@ -194,6 +196,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
             if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
                 reply.VoteGranted = true
                 reply.Term = rf.currentTerm
+                rf.votedFor = args.CandidateId
                 return                
             }
         }
@@ -271,7 +274,7 @@ func (rf *Raft)RequestAppendEntry(args AppendEntryArgs, reply *AppendEntryReply)
         for i := 0; i < len(rf.logs); i++ {
             if rf.logs[i].Term == rf.logs[args.PrevLogIndex].Term {
                 reply.ReplyIndex = rf.logs[i].Index
-                //rf.debug("reply Index is %v\n", reply.ReplyIndex)
+                //rf.debug("reply Index is %v, len logs is %v\n", reply.ReplyIndex, len(rf.logs))
                 break
             }
         }
@@ -369,12 +372,27 @@ func (rf *Raft) elect() {
     
     rf.lastTime = time.Now()
     
-    request := RequestVoteArgs{
-        Term            : rf.currentTerm,
-        CandidateId     : rf.me,
-        LastLogIndex    : len(rf.logs) - 1,
-        LastLogTerm     : rf.logs[len(rf.logs)-1].Term,
+    if len(rf.logs) < 1 {
+        rf.debug("wtf\n")
     }
+    var request RequestVoteArgs
+
+    if len(rf.logs) > 0 {
+        request = RequestVoteArgs{
+            Term            : rf.currentTerm,
+            CandidateId     : rf.me,
+            LastLogIndex    : rf.logs[len(rf.logs) - 1].Index,
+            LastLogTerm     : rf.logs[len(rf.logs) - 1].Term,
+        }
+    }else {
+        request = RequestVoteArgs {
+            Term : rf.currentTerm,
+            CandidateId : rf.me,
+            LastLogIndex : 0,
+            LastLogTerm : 0,
+        }
+    }
+
     
     rf.persist()
     rf.mu.Unlock()
@@ -417,13 +435,13 @@ func (rf *Raft) elect() {
                             rf.state = Follower
                             rf.currentTerm = reply.Term
                             rf.votedFor = -1
+
                             rf.lastTime = time.Now()
                             //rf.debug("reset lastTime to %v\n", rf.lastTime)
                             rf.persist()
                             rf.mu.Unlock()
                         }
-                        voteCh <- reply.VoteGranted
-                        
+                        voteCh <- reply.VoteGranted                                               
                     }
                 case <- time.After(100 * time.Millisecond) :
                     voteCh <- false
@@ -445,8 +463,11 @@ func (rf *Raft) elect() {
     if voteCount > (len(rf.peers) / 2 ) && rf.state == Candidate && rf.currentTerm == request.Term {
         rf.mu.Lock()
         rf.state = Leader
-        //rf.debug("I got majority votes!\n")
+        //rf.debug("I got majority votes!, my last index is %v\n", rf.logs[len(rf.logs) - 1].Index)
         for i := 0; i < len(rf.peers); i++ {
+            if i == rf.me {
+                continue
+            }
             rf.nextIndex[i] = rf.logs[len(rf.logs) - 1].Index + 1
             rf.matchIndex[i] = 0
         }
@@ -562,7 +583,7 @@ func (rf *Raft) sendHeartBeat(leaderTerm int) {
 
         // Unlock
         rf.mu.Unlock()
-        time.Sleep(time.Duration(100 * time.Millisecond))
+        time.Sleep(time.Duration(50 * time.Millisecond))
     }
 }
 
