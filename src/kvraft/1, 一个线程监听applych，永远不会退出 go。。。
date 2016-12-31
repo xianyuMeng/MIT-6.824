@@ -1,0 +1,64 @@
+1, 一个线程监听applych，永远不会退出 go。。。
+2， map {
+	key : index int
+	value : channel {
+		struct op{
+			arguement
+			reply
+		}
+	}
+}
+
+client 收到别人调用他的api
+
+再搞一个函数
+	for{
+		内层的for循环可能没有发现leader
+		for{
+			尝试所有的server call rpc 获得reply （wrongleader）
+			1，server没收到（ok is false）
+				尝试下一个server
+			2，ok is true
+				wrongleader true
+					尝试下一个leader
+				wrongleader false
+					reply 返回给用户
+		}
+	}
+
+
+每一个client有自己的id
+需要标记每一个请求，通过比较身份证知道两个请求是否为同一个
+每个client自己使用的key会有前缀 
+serial ID 每次多一个请求+1（保证一次只有一个请求）
+serialID+clientID唯一标定一个请求,传给server
+
+client发起rpc调用server的函数
+server会有一个request线程执行
+	调用start函数把请求写进log里
+	1，不是leader
+		直接返回
+	2，是leader
+		请求已经被写进log了
+	3，
+	map index-result（channel）（执行请求的结果KVReply）
+	每隔100ms检查index对应的value有没有结果，如果有结果，就返回给client
+	检查结果的clientID和SerialID
+	等结果等1s，超时返回wrongleader
+	调用start函数时不行加锁
+	select
+		case index-result：
+		case time-after
+
+
+我们会在applych监听到这个请求
+run线程监听applych
+执行applymessage，对raftKV加锁
+	map string-string
+	把结果写进上上面的map里，clientId serialID
+	比较新旧serialID
+		两个serialID一样的
+	新serialID比旧serialID大1
+再搞一个map
+在raftKV有三个map
+	给每一个client储存serialID

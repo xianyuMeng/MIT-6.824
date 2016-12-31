@@ -6,9 +6,10 @@ import (
 	"log"
 	"raft"
 	"sync"
+	"time"
 )
 
-const Debug = 0
+const Debug = 1
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
@@ -16,7 +17,6 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	}
 	return
 }
-
 
 type Op struct {
 	// Your definitions here.
@@ -33,16 +33,118 @@ type RaftKV struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+
+	markClient map[int64]int
+	// key : ClientID; value : SerialID
+	markReply map[int]chan KVReply
+	// key : index (replied by func "start"); value : KVReply
+	markRequest map[string]string
 }
 
-
-func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
-	// Your code here.
+// Helper function to print debug info for this server.
+func (kv *RaftKV) debug(format string, a ...interface{}) (n int, err error) {
+    a = append(a, 0)
+    copy(a[1:], a[0:])
+    a[0] = kv.me
+    n, err = DPrintf("KVRaft %v " + format, a...)
+    return
 }
 
-func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
+func (kv *RaftKV) Exe(args *KVArgs, reply *KVReply) {
+
+	//markRequest[args.Key] = args.Value
+
+	index, _, isLeader := kv.rf.Start(*args)
+
+	if isLeader == false {
+		reply.WrongLeader = true
+		return
+	} else {
+		// kv.debug("start %v %v at %v\n", args.ClientID, args.SerialID, index)
+		kv.mu.Lock()
+		if _, ok := kv.markReply[index]; !ok {
+			kv.markReply[index] = make(chan KVReply, 1)
+		}
+		kv.mu.Unlock()
+		select {
+		case r := <-kv.markReply[index]:
+			// kv.debug("recv %v %v %v\n", r.ClientID, r.SerialID, r.WrongLeader)
+			if r.ClientID == args.ClientID && r.SerialID == args.SerialID {
+				// kv.debug("return\n")
+				reply.WrongLeader = r.WrongLeader
+				reply.Err = r.Err
+				reply.Value = r.Value
+				// *reply = r
+			} else {
+				reply.WrongLeader = true
+			}
+			return
+		case <-time.After(1000 * time.Millisecond):
+			reply.WrongLeader = true
+			return
+		}
+	}
+
 }
+
+func (kv *RaftKV) Run() {
+	reply := KVReply{
+		WrongLeader: true,
+	}
+	for {
+		applych := <-kv.applyCh
+		// kv.debug("Received from applyCh\n")
+		index := applych.Index
+		// kv.debug("Use snapshot %v\n", applych.UseSnapshot)
+		kvargs := applych.Command.(KVArgs)
+
+		// kv.debug("apply cid %v sid %v\n", kvargs.ClientID, kvargs.SerialID)
+
+		kv.mu.Lock()
+		_, ok := kv.markClient[kvargs.ClientID]
+
+		if !ok || (ok && (kv.markClient[kvargs.ClientID]+1) == kvargs.SerialID) {
+			//not duplicate
+			if kvargs.OpType == PUT {
+				kv.markRequest[kvargs.Key] = kvargs.Value
+			}
+			if kvargs.OpType == APPEND {
+				kv.markRequest[kvargs.Key] = kv.markRequest[kvargs.Key] + kvargs.Value
+			}
+			kv.markClient[kvargs.ClientID] = kvargs.SerialID
+
+		} // else: sliently ignore duplicate command.
+
+		// Prepare the reply.
+        reply.WrongLeader = false
+		reply.OpType = kvargs.OpType
+		if _, ok := kv.markRequest[kvargs.Key]; !ok {
+			reply.Err = ErrNoKey
+		} else {
+			reply.Err = OK
+			reply.Value = kv.markRequest[kvargs.Key]
+		}
+		reply.ClientID = kvargs.ClientID
+		reply.SerialID = kvargs.SerialID
+
+		if _, ch := kv.markReply[index]; !ch {
+			kv.markReply[index] = make(chan KVReply, 1)
+		}
+
+		kv.markReply[index] <- reply
+		kv.mu.Unlock()
+
+	}
+
+}
+
+// func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
+// 	// Your code here.
+// }
+
+// func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
+// 	// Your code here.
+// }
 
 //
 // the tester calls Kill() when a RaftKV instance won't
@@ -72,6 +174,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// call gob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	gob.Register(Op{})
+	gob.Register(KVReply{})
+	gob.Register(KVArgs{})
 
 	kv := new(RaftKV)
 	kv.me = me
@@ -81,7 +185,10 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-
+	kv.markClient = make(map[int64]int)
+	kv.markReply = make(map[int]chan KVReply)
+	kv.markRequest = make(map[string]string)
+	go kv.Run()
 
 	return kv
 }
