@@ -132,6 +132,16 @@ func (kv *RaftKV) Run() {
 		}
 
 		kv.markReply[index] <- reply
+
+		if kv.rf.persister.RaftStateSize() > kv.maxraftstate {
+			w := new(bytes.Buffer)
+    		e := gob.NewEncoder(w)
+    		e.Encode(kv.markClient)
+    		e.Encode(kv.markRequest)
+    		data := w.Bytes()
+
+    		kv.rf.Snapshot(data, index)
+		} 
 		kv.mu.Unlock()
 
 	}

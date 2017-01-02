@@ -106,11 +106,48 @@ func (rf *Raft) Snapshot(maps []byte, index int) {
     e.Encode(FirstIndex(rf.logs))
     e.Encode(FirstTerm(rf.logs))
     data := w.Bytes()
-    data = append(maps, data...)
+    data = append(data, maps...)
     rf.persister.SaveSnapshot(data)
 }
 func (rf *Raft) GetRaftSize() int{
     return len(rf.persister.raftstate)
+}
+
+func (rf *Raft) Readsnapshot (data []byte){
+    if len(data) == 0 {
+        return
+    }
+    r := bytes.NewBuffer(data)
+    d := gob.NewDecoder(r)
+ 
+    markClient = make(map[int64]int, 0)
+    markRequest = make(map[string]string, 0)
+    var lastIncludeIndex int
+    var lastIncludeTerm int
+
+    d.Decode(&lastIncludeIndex)
+    d.Decode(&lastIncludeTerm)
+    d.Decode(&markClient)
+    d.Decode(&markRequest)
+    rf.commitIndex = lastIncludeIndex
+
+    if lastIncludeIndex > LastIndex(rf.logs) {
+        newlogs := LogEntry {
+            Index : lastIncludeIndex,
+            Term : lastIncludeTerm,
+        }
+        rf.logs = newlogs
+        return
+    }
+
+    if lastIncludeIndex >= FirstIndex(rf.logs){
+        newlogs := make([]LogEntry, 0)
+        newlogs = rf.logs[lastIncludeIndex - 1 : ]
+        rf.logs = newlogs
+        return
+    }
+    
+
 }
 // return currentTerm and whether this server
 // believes it is the leader.
