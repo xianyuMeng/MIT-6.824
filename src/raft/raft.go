@@ -119,7 +119,7 @@ func (rf *Raft) Readsnapshot (data []byte){
     }
     r := bytes.NewBuffer(data)
     d := gob.NewDecoder(r)
- 
+
     markClient = make(map[int64]int, 0)
     markRequest = make(map[string]string, 0)
     var lastIncludeIndex int
@@ -763,7 +763,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
     rf.working = true
     // initialize from state persisted before a crash
     rf.readPersist(persister.ReadRaftState())
-    //rf.readsnapshot(persister.ReadSnapshot())
+    rf.Readsnapshot(persister.ReadSnapshot())
     go rf.electionTimer()
     return rf
 }
