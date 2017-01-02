@@ -86,7 +86,32 @@ type Raft struct {
     
     lastTime time.Time // Last contact from leader.
 }
+func (rf *Raft) Snapshot(maps []byte, index int) {
+    rf.mu.Lock()
+    defer rf.mu.Unlock()
 
+    baseindex := FirstIndex(rf.logs)
+    if index <= baseindex || index > LastIndex(rf.logs) {
+        //index is not in the current logs
+        return
+    }
+
+    newlogs := make([]LogEntry, 0)
+    newlogs = rf.logs[LastIndex(rf.logs):]
+    rf.logs = newlogs
+    rf.persist()
+
+    w := new(bytes.Buffer)
+    e := gob.NewEncoder(w)
+    e.Encode(FirstIndex(rf.logs))
+    e.Encode(FirstTerm(rf.logs))
+    data := w.Bytes()
+    data = append(maps, data...)
+    rf.persister.SaveSnapshot(data)
+}
+func (rf *Raft) GetRaftSize() int{
+    return len(rf.persister.raftstate)
+}
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
