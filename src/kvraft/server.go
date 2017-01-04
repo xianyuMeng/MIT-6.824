@@ -7,6 +7,7 @@ import (
 	"raft"
 	"sync"
 	"time"
+	"bytes"
 )
 
 const Debug = 1
@@ -93,57 +94,76 @@ func (kv *RaftKV) Run() {
 	}
 	for {
 		applych := <-kv.applyCh
-		// kv.debug("Received from applyCh\n")
-		index := applych.Index
-		// kv.debug("Use snapshot %v\n", applych.UseSnapshot)
-		kvargs := applych.Command.(KVArgs)
 
-		// kv.debug("apply cid %v sid %v\n", kvargs.ClientID, kvargs.SerialID)
-
-		kv.mu.Lock()
-		_, ok := kv.markClient[kvargs.ClientID]
-
-		if !ok || (ok && (kv.markClient[kvargs.ClientID]+1) == kvargs.SerialID) {
-			//not duplicate
-			if kvargs.OpType == PUT {
-				kv.markRequest[kvargs.Key] = kvargs.Value
+		if applych.UseSnapshot == true {
+			newmarkClient := make(map[int64]int, 0)
+			newmarkRequest := make(map[string]string, 0)
+			var lastincludeindex int
+			var lastincludeterm int
+			if len(applych.Snapshot) == 0 {
+				return
 			}
-			if kvargs.OpType == APPEND {
-				kv.markRequest[kvargs.Key] = kv.markRequest[kvargs.Key] + kvargs.Value
+			r := bytes.NewBuffer(applych.Snapshot)
+			d := gob.NewDecoder(r)
+			d.Decode(&lastincludeindex)
+			d.Decode(&lastincludeterm)
+			d.Decode(&newmarkClient)
+			d.Decode(&newmarkRequest)
+			kv.markClient = newmarkClient
+			kv.markRequest = newmarkRequest
+		} else { 
+			// kv.debug("Received from applyCh\n")
+			index := applych.Index
+			// kv.debug("Use snapshot %v\n", applych.UseSnapshot)
+			kvargs := applych.Command.(KVArgs)
+
+			// kv.debug("apply cid %v sid %v\n", kvargs.ClientID, kvargs.SerialID)
+
+			kv.mu.Lock()
+			_, ok := kv.markClient[kvargs.ClientID]
+
+			if !ok || (ok && (kv.markClient[kvargs.ClientID]+1) == kvargs.SerialID) {
+				//not duplicate
+				if kvargs.OpType == PUT {
+					kv.markRequest[kvargs.Key] = kvargs.Value
+				}
+				if kvargs.OpType == APPEND {
+					kv.markRequest[kvargs.Key] = kv.markRequest[kvargs.Key] + kvargs.Value
+				}
+				kv.markClient[kvargs.ClientID] = kvargs.SerialID
+
+			} // else: sliently ignore duplicate command.
+
+			// Prepare the reply.
+	        reply.WrongLeader = false
+			reply.OpType = kvargs.OpType
+			if _, ok := kv.markRequest[kvargs.Key]; !ok {
+				reply.Err = ErrNoKey
+			} else {
+				reply.Err = OK
+				reply.Value = kv.markRequest[kvargs.Key]
 			}
-			kv.markClient[kvargs.ClientID] = kvargs.SerialID
+			reply.ClientID = kvargs.ClientID
+			reply.SerialID = kvargs.SerialID
 
-		} // else: sliently ignore duplicate command.
+			if _, ch := kv.markReply[index]; !ch {
+				kv.markReply[index] = make(chan KVReply, 1)
+			}
 
-		// Prepare the reply.
-        reply.WrongLeader = false
-		reply.OpType = kvargs.OpType
-		if _, ok := kv.markRequest[kvargs.Key]; !ok {
-			reply.Err = ErrNoKey
-		} else {
-			reply.Err = OK
-			reply.Value = kv.markRequest[kvargs.Key]
+			kv.markReply[index] <- reply
+
+			//maxraftsize might be -1
+			if kv.rf.GetStateSize() > kv.maxraftstate && kv.maxraftstate >= 0 {
+				w := new(bytes.Buffer)
+	    		e := gob.NewEncoder(w)
+	    		e.Encode(kv.markClient)
+	    		e.Encode(kv.markRequest)
+	    		data := w.Bytes()
+
+	    		go kv.rf.Snapshot(data, index)
+			} 
+			kv.mu.Unlock()
 		}
-		reply.ClientID = kvargs.ClientID
-		reply.SerialID = kvargs.SerialID
-
-		if _, ch := kv.markReply[index]; !ch {
-			kv.markReply[index] = make(chan KVReply, 1)
-		}
-
-		kv.markReply[index] <- reply
-
-		if kv.rf.persister.RaftStateSize() > kv.maxraftstate {
-			w := new(bytes.Buffer)
-    		e := gob.NewEncoder(w)
-    		e.Encode(kv.markClient)
-    		e.Encode(kv.markRequest)
-    		data := w.Bytes()
-
-    		kv.rf.Snapshot(data, index)
-		} 
-		kv.mu.Unlock()
-
 	}
 
 }

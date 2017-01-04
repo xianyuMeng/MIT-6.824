@@ -62,3 +62,62 @@ run线程监听applych
 再搞一个map
 在raftKV有三个map
 	给每一个client储存serialID
+
+
+snapshot包含：
+	markclient
+	markrequest
+	lastincludeindex
+	lastincludeterm
+
+在raft.go里加一个函数
+getraftsize int{
+	return rf.persist.rfstate_size
+}
+
+在run线程里把reply写进channel， 检查kv.rf.getraftsize > kv.maxstatesize?snapshot:none
+new byte buffer
+new gob.encoder
+encode 两个map（raftkv自己知道的）
+在raft添加两个成员函数
+
+1) 被上层的raftkv的run调用
+
+	(rf *raft)snapshot(snapshot []byte, index int)
+	index告诉底层的的raftsnapshot到哪个index（闭集）
+	在run里面go这个snapshot函数
+
+	1.加锁，defer解锁
+	2.baseindex：当前log里第一个entry的index
+	3.判断index在不在当前的log里
+		if index <= baseindex || index > lastindex{
+			index不在当前log里
+			return（底层的raft拒绝）
+		} 
+	4.newlogs = make([]LogEntry, 0)
+		newlogs = rf.logs[lastindex:]
+		rf.logs = newlogs
+	5.call persist()
+	6.new encoder
+		encode rf.logs[0].index 
+		encode rf.logs[0].term
+		snapshot = snapshot + 上面那两
+	7.rf.persister.savesnapshot()
+
+在make里先call readpersist(), 再call readsnapshot()
+func (rf *raft )readsnapshot(snapshot []byte){
+	1. len(snapshot) == 0
+		return
+	2. new buffer
+		new decoder
+	3. 从decoder读
+		lastincludeindex int
+		lastincludeterm int
+	4.rf.committedindex = lastincludeindex
+	
+}
+
+leader在sendheartbeat调用installsnapshot
+installsnapshot 里save persist
+跟readsnapshot一样修改自己的log
+再调用一次persist
