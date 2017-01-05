@@ -33,15 +33,19 @@ type SnapshotArgs struct {
 	Data             []byte
 }
 
+type SnapshotReply struct {
+    ReplyTerm int
+}
 func (rf *Raft) GetStateSize() int {
 	return rf.persister.RaftStateSize()
 }
-func (rf *Raft) InstallSnapshot(shot SnapshotArgs, reply *int) {
+func (rf *Raft) InstallSnapshot(shot SnapshotArgs, reply *SnapshotReply) {
+	rf.debug("been installing...LOCK\n")
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-    rf.debug("been installing...\n")
+	rf.debug("been installing...\n")
 	if shot.Term < rf.currentTerm {
-		*reply = rf.currentTerm
+		reply.ReplyTerm = rf.currentTerm
 		return
 	}
 	rf.commitIndex = shot.LastIncludeIndex
@@ -64,8 +68,8 @@ func (rf *Raft) InstallSnapshot(shot SnapshotArgs, reply *int) {
 		Snapshot:    shot.Data,
 	}
 	rf.applyCh <- applych
-	*reply = rf.currentTerm
-    rf.debug("done\n")
+	reply.ReplyTerm = rf.currentTerm
+	rf.debug("done\n")
 	return
 }
 
@@ -361,8 +365,9 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 //
-func (rf *Raft) installSanpshotRPC(server int, args SnapshotArgs, reply *int) bool {
+func (rf *Raft) installSanpshotRPC(server int, args SnapshotArgs, reply *SnapshotReply) bool {
 	ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
+    rf.debug("ok is %v\n", ok)
 	return ok
 }
 func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *RequestVoteReply) bool {
@@ -664,126 +669,126 @@ func (rf *Raft) sendHeartBeat(leaderTerm int) {
 					Data:             rf.persister.ReadSnapshot(),
 				}
 
-				var replyTerm int
-                go func(p int, shot SnapshotArgs) {
-                    okchan := make(chan bool)
-                    go func() {
-                        okchan <- rf.installSanpshotRPC(p, shot, &replyTerm)
-                    }()
-                    select {
-                    case ok := <-okchan:
-                        if ok {
-                            rf.debug("installing snapshot for peer %v， replyterm is %v\n", p, replyTerm)
-                            if replyTerm > rf.currentTerm {
-                                rf.mu.Lock()
-                                defer rf.mu.Unlock()
+				var reply SnapshotReply
+				go func(p int, shot SnapshotArgs) {
+					okchan := make(chan bool)
+					go func() {
+						okchan <- rf.installSanpshotRPC(p, shot, &reply)
+					}()
+					select {
+					case ok := <-okchan:
+						if ok {
+							rf.debug("installing snapshot for peer %v， replyterm is %v\n", p, reply.ReplyTerm)
+							if reply.ReplyTerm > rf.currentTerm {
+								rf.mu.Lock()
+								defer rf.mu.Unlock()
 
-                                rf.state = Follower
-                                rf.votedFor = -1
-                                rf.lastTime = time.Now()
-                                rf.currentTerm = replyTerm
-                                rf.nextIndex[peer] = FirstIndex(rf.logs) + 1
-                                rf.persist()
-                                return
-                            }
-                            if replyTerm <= rf.currentTerm {
-                                rf.mu.Lock()
-                                defer rf.mu.Unlock()
-
-                                rf.nextIndex[p] = replyTerm
-                                rf.matchIndex[p] = FirstIndex(rf.logs)
-                                rf.persist()
-                                return
-                            }
-
-                        } else {
-                            rf.debug("failed to install snapshot\n")
-                            return
-                        }
-                    case <-time.After(1000 * time.Millisecond):
-                        rf.debug("WTF\n")
-                    }
-                }(peer, shot)
-            }
-
-			if FirstIndex(rf.logs) != 0 {
-				rf.debug("nextIndex for peer %v is %v, len logs is %v, firstIndex is %v\n", peer, nextIndex, len(rf.logs), FirstIndex(rf.logs))
-			}
-
-			heartbeat := AppendEntryArgs{
-				Term:         leaderTerm,
-				LeaderId:     rf.me,
-				Entries:      make([]LogEntry, len(rf.logs[nextIndex-FirstIndex(rf.logs):])),
-				LeaderCommit: rf.commitIndex,
-				PrevLogTerm:  rf.logs[nextIndex-1-FirstIndex(rf.logs)].Term,
-				PrevLogIndex: nextIndex - 1 - FirstIndex(rf.logs),
-			}
-			//rf.debug("sending heartbeat... leaderTerm is %v\n", leaderTerm)
-			copy(heartbeat.Entries, rf.logs[nextIndex-FirstIndex(rf.logs):])
-
-			go func(p int, heartbeat AppendEntryArgs) {
-				var reply AppendEntryReply
-				okchan := make(chan bool)
-				go func() {
-					okchan <- rf.sendAppendEntry(p, heartbeat, &reply)
-				}()
-				select {
-				// We get the reply.
-				case ok := <-okchan:
-					// if ok
-					// 1. if reply.Term > rf.currentTerm, update term and change back to follower
-					// 2. if succeed, update matchIndex and nextIndex
-					// 3. if failed, decrease nextIndex by 1
-					if ok {
-						rf.mu.Lock()
-						defer rf.mu.Unlock()
-
-						if !rf.working {
-							return
-						}
-
-						if rf.currentTerm != leaderTerm {
-							return
-						}
-
-						if rf.state != Leader {
-							return
-						}
-
-						if reply.Term > rf.currentTerm {
-							// Whatelse do we have to do here?
-							// Check elect.
-							rf.state = Follower
-							rf.currentTerm = reply.Term
-							rf.lastTime = time.Now()
-							rf.votedFor = -1
-							rf.persist()
-							return
-						}
-						if reply.Success {
-							// You do not have to update nextIndex amd matchIndex
-							// if heartbeat is emtpy
-							if len(heartbeat.Entries) > 0 {
-								rf.nextIndex[p] = LastIndex(heartbeat.Entries) + 1
-								rf.matchIndex[p] = LastIndex(heartbeat.Entries)
-								//rf.debug("I got reply from %v, nextIndex is %v\n", p, rf.nextIndex[p])
-								for k := 0; k < len(heartbeat.Entries); k++ {
-									//rf.debug("heartbeat %v is %v\n", k, heartbeat.Entries[k])
-								}
+								rf.state = Follower
+								rf.votedFor = -1
+								rf.lastTime = time.Now()
+								rf.currentTerm = reply.ReplyTerm
+								rf.nextIndex[p] = FirstIndex(rf.logs) + 1
+								rf.persist()
+								return
 							}
+							if reply.ReplyTerm <= rf.currentTerm {
+								rf.mu.Lock()
+								defer rf.mu.Unlock()
+
+								rf.nextIndex[p] = reply.ReplyTerm
+								rf.matchIndex[p] = FirstIndex(rf.logs)
+								rf.persist()
+								return
+							}
+
+						} else {
+							rf.debug("failed to install snapshot\n")
 							return
 						}
-						if rf.nextIndex[p] > 1 {
-							// rf.nextIndex[p]--
-							rf.nextIndex[p] = reply.ReplyIndex
+					case <-time.After(1000 * time.Millisecond):
+						rf.debug("WTF\n")
+					}
+				}(peer, shot)
+			} else {
+				if FirstIndex(rf.logs) != 0 {
+					rf.debug("nextIndex for peer %v is %v, len logs is %v, firstIndex is %v\n", peer, nextIndex, len(rf.logs), FirstIndex(rf.logs))
+				}
+
+				heartbeat := AppendEntryArgs{
+					Term:         leaderTerm,
+					LeaderId:     rf.me,
+					Entries:      make([]LogEntry, len(rf.logs[nextIndex-FirstIndex(rf.logs):])),
+					LeaderCommit: rf.commitIndex,
+					PrevLogTerm:  rf.logs[nextIndex-1-FirstIndex(rf.logs)].Term,
+					PrevLogIndex: nextIndex - 1 - FirstIndex(rf.logs),
+				}
+				//rf.debug("sending heartbeat... leaderTerm is %v\n", leaderTerm)
+				copy(heartbeat.Entries, rf.logs[nextIndex-FirstIndex(rf.logs):])
+
+				go func(p int, heartbeat AppendEntryArgs) {
+					var reply AppendEntryReply
+					okchan := make(chan bool)
+					go func() {
+						okchan <- rf.sendAppendEntry(p, heartbeat, &reply)
+					}()
+					select {
+					// We get the reply.
+					case ok := <-okchan:
+						// if ok
+						// 1. if reply.Term > rf.currentTerm, update term and change back to follower
+						// 2. if succeed, update matchIndex and nextIndex
+						// 3. if failed, decrease nextIndex by 1
+						if ok {
+							rf.mu.Lock()
+							defer rf.mu.Unlock()
+
+							if !rf.working {
+								return
+							}
+
+							if rf.currentTerm != leaderTerm {
+								return
+							}
+
+							if rf.state != Leader {
+								return
+							}
+
+							if reply.Term > rf.currentTerm {
+								// Whatelse do we have to do here?
+								// Check elect.
+								rf.state = Follower
+								rf.currentTerm = reply.Term
+								rf.lastTime = time.Now()
+								rf.votedFor = -1
+								rf.persist()
+								return
+							}
+							if reply.Success {
+								// You do not have to update nextIndex amd matchIndex
+								// if heartbeat is emtpy
+								if len(heartbeat.Entries) > 0 {
+									rf.nextIndex[p] = LastIndex(heartbeat.Entries) + 1
+									rf.matchIndex[p] = LastIndex(heartbeat.Entries)
+									//rf.debug("I got reply from %v, nextIndex is %v\n", p, rf.nextIndex[p])
+									for k := 0; k < len(heartbeat.Entries); k++ {
+										//rf.debug("heartbeat %v is %v\n", k, heartbeat.Entries[k])
+									}
+								}
+								return
+							}
+							if rf.nextIndex[p] > 1 {
+								// rf.nextIndex[p]--
+								rf.nextIndex[p] = reply.ReplyIndex
+							}
+
 						}
 
+					case <-time.After(100 * time.Millisecond):
+						//rf.debug("Now is %v, After 100 Millisecond\n", time.Now())
 					}
-
-				case <-time.After(100 * time.Millisecond):
-					//rf.debug("Now is %v, After 100 Millisecond\n", time.Now())
-				}
-			}(peer, heartbeat)
+				}(peer, heartbeat)
+			}
 		}
 
 		// Unlock
