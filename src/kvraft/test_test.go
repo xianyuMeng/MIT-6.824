@@ -412,13 +412,14 @@ func TestSnapshotRPC(t *testing.T) {
 
 	ck.Put("a", "A")
 	check(t, ck, "a", "A")
-
+	//fmt.Printf("1...\n")
 	// a bunch of puts into the majority partition.
 	cfg.partition([]int{0, 1}, []int{2})
 	{
 		ck1 := cfg.makeClient([]int{0, 1})
 		for i := 0; i < 50; i++ {
 			ck1.Put(strconv.Itoa(i), strconv.Itoa(i))
+			//fmt.Printf("%v...\n", i)
 		}
 		time.Sleep(electionTimeout)
 		ck1.Put("b", "B")

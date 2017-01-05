@@ -161,6 +161,7 @@ func (kv *RaftKV) Run() {
 	    		data := w.Bytes()
 
 	    		go kv.rf.Snapshot(data, index)
+	    		//kv.debug("Start snapshot for %v\n", index)
 			} 
 			kv.mu.Unlock()
 		}
