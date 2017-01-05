@@ -39,7 +39,7 @@ func (rf *Raft) GetStateSize() int {
 func (rf *Raft) InstallSnapshot(shot SnapshotArgs, reply *int) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-
+    rf.debug("been installing...\n")
 	if shot.Term < rf.currentTerm {
 		*reply = rf.currentTerm
 		return
@@ -65,6 +65,7 @@ func (rf *Raft) InstallSnapshot(shot SnapshotArgs, reply *int) {
 	}
 	rf.applyCh <- applych
 	*reply = rf.currentTerm
+    rf.debug("done\n")
 	return
 }
 
@@ -664,45 +665,46 @@ func (rf *Raft) sendHeartBeat(leaderTerm int) {
 				}
 
 				var replyTerm int
-				okchan := make(chan bool)
-				go func() {
-					okchan <- rf.installSanpshotRPC(peer, shot, &replyTerm)
-				}()
-				select {
-				case ok := <-okchan:
-					if ok {
-						rf.debug("installing snapshot for peer %v\n", peer)
-						if replyTerm > rf.currentTerm {
-							rf.mu.Lock()
-							defer rf.mu.Unlock()
+                go func(p int, shot SnapshotArgs) {
+                    okchan := make(chan bool)
+                    go func() {
+                        okchan <- rf.installSanpshotRPC(p, shot, &replyTerm)
+                    }()
+                    select {
+                    case ok := <-okchan:
+                        if ok {
+                            rf.debug("installing snapshot for peer %v， replyterm is %v\n", p, replyTerm)
+                            if replyTerm > rf.currentTerm {
+                                rf.mu.Lock()
+                                defer rf.mu.Unlock()
 
-							rf.state = Follower
-							rf.votedFor = -1
-							rf.lastTime = time.Now()
-							rf.currentTerm = replyTerm
-							//rf.nextIndex[peer] = FirstIndex(rf.logs) + 1
-							rf.persist()
-							return
-						}
-						if replyTerm <= rf.currentTerm {
-							rf.mu.Lock()
-							defer rf.mu.Unlock()
+                                rf.state = Follower
+                                rf.votedFor = -1
+                                rf.lastTime = time.Now()
+                                rf.currentTerm = replyTerm
+                                rf.nextIndex[peer] = FirstIndex(rf.logs) + 1
+                                rf.persist()
+                                return
+                            }
+                            if replyTerm <= rf.currentTerm {
+                                rf.mu.Lock()
+                                defer rf.mu.Unlock()
 
-							rf.nextIndex[peer] = replyTerm
-							rf.matchIndex[peer] = FirstIndex(rf.logs)
-							rf.persist()
-							return
-						}
+                                rf.nextIndex[p] = replyTerm
+                                rf.matchIndex[p] = FirstIndex(rf.logs)
+                                rf.persist()
+                                return
+                            }
 
-					} else {
-						rf.debug("failed to install snapshot\n")
-						return
-					}
-				case <-time.After(1000 * time.Millisecond):
-					rf.debug("WTF\n")
-				}
-				return
-			}
+                        } else {
+                            rf.debug("failed to install snapshot\n")
+                            return
+                        }
+                    case <-time.After(1000 * time.Millisecond):
+                        rf.debug("WTF\n")
+                    }
+                }(peer, shot)
+            }
 
 			if FirstIndex(rf.logs) != 0 {
 				rf.debug("nextIndex for peer %v is %v, len logs is %v, firstIndex is %v\n", peer, nextIndex, len(rf.logs), FirstIndex(rf.logs))
