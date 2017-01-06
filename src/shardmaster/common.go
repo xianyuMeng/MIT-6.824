@@ -1,5 +1,4 @@
 package shardmaster
-
 //
 // Master shard server: assigns shards to replication groups.
 //
@@ -35,42 +34,72 @@ const (
 	OK = "OK"
 )
 
+type Operation int
+
+const (
+	JOIN Operation = iota
+	LEAVE Operation = iota
+	MOVE Operation = iota
+	QUERY Operation = iota
+)
+
 type Err string
 
-type JoinArgs struct {
-	Servers map[int][]string // new GID -> servers mappings
-}
-
-type JoinReply struct {
-	WrongLeader bool
-	Err         Err
-}
-
-type LeaveArgs struct {
+type SKVArgs struct {
+	OpType Operation
+	Servers map[int][]string
 	GIDs []int
-}
-
-type LeaveReply struct {
-	WrongLeader bool
-	Err         Err
-}
-
-type MoveArgs struct {
 	Shard int
-	GID   int
+	GID int
+	Num int
+
+	ClientID int64
+	SerialID int
 }
 
-type MoveReply struct {
+type SKVReply struct {
+	OpType Operation
 	WrongLeader bool
-	Err         Err
-}
+	Err Err
+	Config Config
 
-type QueryArgs struct {
-	Num int // desired config number
+	ClientID int64
+	SerialID int
 }
+// type JoinArgs struct {
+// 	Servers map[int][]string // new GID -> servers mappings
+// }
 
-type QueryReply struct {
-	WrongLeader bool
-	Err         Err
-	Config      Config
-}
+// type JoinReply struct {
+// 	WrongLeader bool
+// 	Err         Err
+// }
+
+// type LeaveArgs struct {
+// 	GIDs []int
+// }
+
+// type LeaveReply struct {
+// 	WrongLeader bool
+// 	Err         Err
+// }
+
+// type MoveArgs struct {
+// 	Shard int
+// 	GID   int
+// }
+
+// type MoveReply struct {
+// 	WrongLeader bool
+// 	Err         Err
+// }
+
+// type QueryArgs struct {
+// 	Num int // desired config number
+// }
+
+// type QueryReply struct {
+// 	WrongLeader bool
+// 	Err         Err
+// 	Config      Config
+// }
