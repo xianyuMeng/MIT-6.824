@@ -7,8 +7,17 @@ import (
 	"sync"
 	"encoding/gob"
 	"time"
+	"log"
+	"sort"
 )
+const Debug = 1
 
+func DPrintf(format string, a ...interface{}) (n int, err error) {
+	if Debug > 0 {
+		log.Printf(format, a...)
+	}
+	return
+}
 type ShardMaster struct {
 	mu      sync.Mutex
 	me      int
@@ -25,7 +34,13 @@ type ShardMaster struct {
 	configs []Config // indexed by config num
 }
 
-
+func (sm *ShardMaster) debug(format string, a ...interface{}) (n int, err error) {
+    a = append(a, 0)
+    copy(a[1:], a[0:])
+    a[0] = sm.me
+    n, err = DPrintf("SKVRaft %v " + format, a...)
+    return
+}
 type Op struct {
 	// Your data here.
 }
@@ -34,22 +49,151 @@ func LastConfig (configs []Config) Config {
 	return configs[len(configs) - 1]
 }
 
+type Item struct {
+	GID int
+	Shards []int
+	Num int
+}
+
+type Items []Item
+
+func (g Items) Len() int{
+	return len(g)
+}
+
+func (g Items) Swap(i, j int) {
+	g[i], g[j] = g[j], g[i]	
+}
+
+func (g Items) Less(i, j int) bool {
+	return g[i].Num < g[j].Num
+}
+
+func (sm *ShardMaster) MoveShards (config *Config) {
+
+	gid_to_shards := make(map[int]Item, 0)
+	leavegid := make([]int, 0)
+	newgid := make([]int, 0)
+	leave_gid_to_shards := make(map[int]Item, 0)
+
+	for s, g := range config.Shards {
+		if _, ok := config.Groups[g]; !ok {
+			//this is gid that left the group
+			leavegid = append(leavegid, g)
+			if _, ok := leave_gid_to_shards[g]; !ok {
+				shards := []int{s}
+				item := Item {
+					GID : g,
+					Shards : shards,
+					Num : 1,
+				}
+				leave_gid_to_shards[g] = item
+			} else {
+				item := Item {
+					Num : gid_to_shards[g].Num + 1,
+					GID : g,
+					Shards : make([]int, len(leave_gid_to_shards[g].Shards)),
+				}
+				copy(item.Shards, leave_gid_to_shards[g].Shards)
+				item.Shards = append(item.Shards, s)
+				leave_gid_to_shards[g] = item
+			}
+		} else {
+			//this is old gid
+			if _, ok := gid_to_shards[g]; !ok {
+				//check if the gid is in the map
+				shards := []int{s}
+				item := Item {
+					GID : g,
+					Shards : shards,
+					Num : 1,
+				}
+				gid_to_shards[g] = item
+			} else {
+				item := Item {
+					Num : gid_to_shards[g].Num + 1,
+					GID : g,
+				}
+				item.Shards = make([]int, len(gid_to_shards[g].Shards))
+				copy(item.Shards, gid_to_shards[g].Shards)
+				item.Shards = append(item.Shards, s)
+				gid_to_shards[g] = item
+			}
+		}
+	}
+
+	for k, _ := range config.Groups {
+		if _, ok := gid_to_shards[k]; !ok {
+			//this is new gid
+			item := Item {
+				Num : 0,
+				GID : k,
+				Shards : make([]int, 0),
+			}
+			newgid = append(newgid, k)
+			gid_to_shards[k] = item
+		}
+	}
+
+	items := make(Items, 0)
+	for _, v := range gid_to_shards {
+		items = append(items, v)
+	}
+	//shard number that should to be assigned to another gid
+	shards_to_move := make([]int, 0)
+	sort.Sort(items)
+	
+	ave_anticipated := len(config.Shards) / (len(items))
+	if len(newgid) > 0 {
+		ret := len(config.Shards) % (len(items))
+		tmp := 0
+		for i:= len(items) - 1; i >= 0; i = i - 1 {
+			if len(items[i].Shards) > ave_anticipated {
+				if tmp < ret {
+					shards_to_move = append(shards_to_move, items[i].Shards[ave_anticipated + 1:]...)			
+				} else {
+					shards_to_move = append(shards_to_move, items[i].Shards[ave_anticipated: ]...)
+				}	
+				tmp += 1		
+			}
+		}
+
+		for i := 0; i < len(shards_to_move); i++ {
+			config.Shards[shards_to_move[i]] = newgid[i % len(newgid)]
+		}		
+	}
+	if len(leavegid) > 0 {
+		for _, v := range leave_gid_to_shards {
+			for s := range v.Shards {
+				config.Shards[s] = items[0].GID
+				items[0].Shards = append(items[0].Shards, s)
+				items[0].Num += 1
+				sort.Sort(items)
+			}
+		}
+	}
+}
 func (sm *ShardMaster) Exec (args *SKVArgs, reply *SKVReply) {
 	index, _, isLeader := sm.rf.Start(*args)
+	//sm.debug("exec...\n")
 
 	if isLeader == false {
 		reply.WrongLeader = true
+		//sm.debug("WrongLeader\n")
 		return
 	} else {
-		// kv.debug("start %v %v at %v\n", args.ClientID, args.SerialID, index)
+		sm.debug("start %v %v at %v\n", args.ClientID, args.SerialID, index)
 		sm.mu.Lock()
 		if _, ok := sm.markReply[index]; !ok {
 			sm.markReply[index] = make(chan SKVReply, 1)
+			sm.debug("lock\n")
 		}
 		sm.mu.Unlock()
+		sm.debug("unlock\n")
+
 		select {
 		case r := <- sm.markReply[index]:
-			// kv.debug("recv %v %v %v\n", r.ClientID, r.SerialID, r.WrongLeader)
+			sm.debug("recv %v %v %v\n", r.ClientID, r.SerialID, r.WrongLeader)
 			if r.ClientID == args.ClientID && r.SerialID == args.SerialID {
 				// kv.debug("return\n")
 				reply.WrongLeader = r.WrongLeader
@@ -73,7 +217,7 @@ func (sm *ShardMaster) handle() {
 	}
 	for {
 		applych := <- sm.applyCh
-		// kv.debug("Received from applyCh\n")
+		sm.debug("Received from applyCh\n")
 		index := applych.Index
 		// kv.debug("Use snapshot %v\n", applych.UseSnapshot)
 		skvargs := applych.Command.(SKVArgs)
@@ -90,37 +234,31 @@ func (sm *ShardMaster) handle() {
 				Num : lastconfig.Num + 1,
 				Groups : make(map[int][]string, 0),
 			}			
-			if skvargs.OpType == JOIN {
-				config.Groups = skvargs.Servers
-				keyNum := len(config.Groups)
-				keys := make([]int, 0, keyNum)
-				for k := range config.Groups {
-					keys = append(keys, k)
-				}
-				for i := 0; i < NShards; i++ {
-					config.Shards[i] = keys[i % keyNum]
-				}
+
+			for k, v := range lastconfig.Groups {
+				config.Groups[k] = v
 			}
+
+			for i, v := range lastconfig.Shards {
+				config.Shards[i] = v
+			}
+			if skvargs.OpType == JOIN {
+				for k, v := range skvargs.Servers {
+					config.Groups[k] = v
+				}
+				sm.MoveShards(&config)
+			}
+
 			if skvargs.OpType == LEAVE {
-				config.Groups = lastconfig.Groups
-				for i := range config.Groups {
-					delete(config.Groups, i)
+				for g := range skvargs.GIDs {
+					delete(config.Groups, g)
 				}
-				keyNum := len(config.Groups)
-				keys := make([]int, 0, keyNum)
-				for k := range config.Groups {
-					keys = append(keys, k)
-				}
-				for i := 0; i < NShards; i++ {
-					config.Shards[i] = keys[i % keyNum]
-				}
+				sm.MoveShards(&config)
 			}
 			if skvargs.OpType == MOVE {
-				config.Groups = lastconfig.Groups
-				config.Shards = lastconfig.Shards
-				config.Shards[skvargs.Shard] = skvargs.GID
-
+				sm.configs[len(sm.configs) - 1].Shards[skvargs.Shard] = skvargs.GID
 			}
+
 			if skvargs.OpType == QUERY {
 				if skvargs.Num == -1 || skvargs.Num > lastconfig.Num{
 					skvreply.Config = lastconfig
@@ -128,7 +266,9 @@ func (sm *ShardMaster) handle() {
 					skvreply.Config = sm.configs[skvargs.Num]
 				}
 			}
-			sm.configs = append(sm.configs, config)
+			if skvargs.OpType == JOIN || skvargs.OpType == MOVE {
+				sm.configs = append(sm.configs, config)				
+			}
 		} // else: sliently ignore duplicate command.
 
 		// Prepare the reply.
@@ -187,6 +327,8 @@ func (sm *ShardMaster) Raft() *raft.Raft {
 func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister) *ShardMaster {
 	sm := new(ShardMaster)
 	sm.me = me
+	gob.Register(SKVReply{})
+	gob.Register(SKVArgs{})
 
 	sm.configs = make([]Config, 1)
 	sm.configs[0].Groups = map[int][]string{}
