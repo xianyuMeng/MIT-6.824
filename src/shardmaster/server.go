@@ -12,7 +12,7 @@ import (
 	"sort"
 )
 
-const Debug = 0
+const Debug = 1
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
@@ -20,7 +20,13 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	}
 	return
 }
-
+func (sm *ShardMaster)PrintShard(s [NShards]int) {
+	if Debug > 0 {
+		for i, g := range s {
+			sm.debug("shard %v -> gid %v\n", i, g)
+		}		
+	}
+}
 type ShardMaster struct {
 	mu      sync.Mutex
 	me      int
@@ -84,7 +90,7 @@ func (sm *ShardMaster) MoveShards(config *Config) {
 		if _, ok := config.Groups[g]; !ok {
 			//this is gid that left the group
 				leavegid = append(leavegid, g)
-				sm.debug("leave gid %v\n", g)
+				sm.debug("leave gid %v for shard %v\n", g, s)
 				if _, ok := leave_gid_to_shards[g]; !ok {
 					shards := []int{s}
 					item := Item{
@@ -150,10 +156,9 @@ func (sm *ShardMaster) MoveShards(config *Config) {
 	sort.Sort(items)
 
 	ave_anticipated := len(config.Shards) / (len(items))
+	ret := len(config.Shards) % (len(items))
 	sm.debug("ave_anticipated is %v\n", ave_anticipated)
-	if len(newgid) > 0 {
-		ret := len(config.Shards) % (len(items))
-		
+	if len(newgid) > 0 {	
 		tmp := 0
 		for i := len(items) - 1; i >= 0; i = i - 1 {
 			if len(items[i].Shards) > ave_anticipated {
@@ -171,9 +176,10 @@ func (sm *ShardMaster) MoveShards(config *Config) {
 		}
 	}
 	if len(leavegid) > 0 {
-		sm.debug("should remove gid %v\n", len(leavegid))
+		//sm.debug("should remove gid %v\n", len(leavegid))
+		
 		for _, v := range leave_gid_to_shards {
-			for s := range v.Shards {
+			for _, s := range v.Shards {
 				config.Shards[s] = items[0].GID
 				items[0].Shards = append(items[0].Shards, s)
 				items[0].Num += 1
@@ -247,7 +253,7 @@ func (sm *ShardMaster) handle() {
 
 			for i, v := range lastconfig.Shards {
 				config.Shards[i] = v
-				sm.debug("shard %v -> gid %v\n", i, v)
+				//sm.debug("shard %v -> gid %v\n", i, v)
 			}
 			sm.debug("last config has %v gids\n", len(config.Groups))
 
@@ -257,7 +263,9 @@ func (sm *ShardMaster) handle() {
 					sm.debug("gid %v join the group\n", k)
 				}
 				sm.MoveShards(&config)
+				sm.PrintShard(config.Shards)
 			}
+
 
 			if skvargs.OpType == LEAVE {
 				for _, g := range skvargs.GIDs {
@@ -265,9 +273,13 @@ func (sm *ShardMaster) handle() {
 					sm.debug("delete gid %v\n", g)
 				}
 				sm.MoveShards(&config)
+				sm.PrintShard(config.Shards)
 			}
 			if skvargs.OpType == MOVE {
 				config.Shards[skvargs.Shard] = skvargs.GID
+				sm.debug("move shard %v -> gid %v\n", skvargs.Shard, skvargs.GID)
+				sm.PrintShard(config.Shards)
+				//sm.MoveShards(&config)
 			}
 
 			if skvargs.OpType == QUERY {
