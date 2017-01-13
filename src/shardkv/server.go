@@ -230,6 +230,9 @@ func (kv *ShardKV) Update() {
 			select {
 				case ok := <- okconfig :
 					if ok.Num != (kv.LastConfigNum() + 1) ||  kv.state != Working {
+						kv.mu.Lock()
+						kv.state = Working
+						kv.mu.Unlock()
 						time.Sleep(50 * time.Millisecond)
 					} else {
 						// need to reconfig
