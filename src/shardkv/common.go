@@ -36,7 +36,7 @@ type SKVArgs struct {
 	ClientID int64
 	SerialID int
 
-	Config shardmaster.Config
+	ConfigNum int
 } 
 
 type SKVReply struct {

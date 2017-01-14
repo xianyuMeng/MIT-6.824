@@ -1,19 +1,30 @@
 package shardkv
 
 import (
-	"shardmaster"
+	"bytes"
+	"encoding/gob"
 	"labrpc"
 	"raft"
+	"shardmaster"
 	"sync"
-	"encoding/gob"
 	"time"
-	"bytes"
 )
 
-type ServerType int
+type ServerState int
+
 const (
-	Working ServerType = iota
-	ReConfig ServerType = iota
+	Working  ServerState = iota
+	ReConfig ServerState = iota
+)
+
+type ShardState int
+
+const (
+	//this shard is mine temporarily, I'm sending it to the other server
+	Sending ShardState = iota
+	Waiting ShardState = iota
+	Holding ShardState = iota
+	NotHoding ShardState = iota
 )
 
 // type Op struct {
@@ -32,13 +43,16 @@ type ShardKV struct {
 	masters      []*labrpc.ClientEnd
 	maxraftstate int // snapshot if log grows this big
 	// Your definitions here.
-	state ServerType
+	state ServerState
 
-	markClient map[int64]int
+	markClient  map[int64]int
 	markRequest map[int]map[string]string
 	//this is the map which stores key-value
 	//shard number -> (key -> value)
 	markReply map[int]chan SKVReply
+	
+	markShard map[int]ShardState
+	//record state of shards
 
 	configs []shardmaster.Config
 
@@ -49,10 +63,10 @@ func (kv *ShardKV) LastConfigNum() int {
 	if len(kv.configs) == 0 {
 		return 0
 	} else {
-		return kv.configs[len(kv.configs) - 1].Num		
+		return kv.configs[len(kv.configs)-1].Num
 	}
 }
-func (kv *ShardKV) Exec (args *SKVArgs, reply *SKVReply) {
+func (kv *ShardKV) Exec(args *SKVArgs, reply *SKVReply) {
 	index, _, isLeader := kv.rf.Start(*args)
 
 	if isLeader == false {
@@ -91,9 +105,19 @@ func (kv *ShardKV) Run() {
 	reply := SKVReply{
 		WrongLeader: true,
 	}
-	for {
+	for kv.state == Working {
 		applych := <-kv.applyCh
+		//read applych
+		//reconfig
+		//change myself as reconfig, if I'm reconfig already, ignore
+		//update shard based on config and new config
+		//
+		//ready
+		//check if I'm reconfig, if not, ignore
+		//change myself as working
 
+		//sending shard
+		//get shard
 		if applych.UseSnapshot == true {
 			newmarkClient := make(map[int64]int, 0)
 			newmarkRequest := make(map[int]map[string]string, 0)
@@ -110,7 +134,7 @@ func (kv *ShardKV) Run() {
 			d.Decode(&newmarkRequest)
 			kv.markClient = newmarkClient
 			kv.markRequest = newmarkRequest
-		} else { 
+		} else {
 			// kv.debug("Received from applyCh\n")
 			index := applych.Index
 			// kv.debug("Use snapshot %v\n", applych.UseSnapshot)
@@ -121,7 +145,7 @@ func (kv *ShardKV) Run() {
 			kv.mu.Lock()
 			_, ok := kv.markClient[skvargs.ClientID]
 
-			if !ok || (ok && (kv.markClient[skvargs.ClientID] + 1) == skvargs.SerialID) {
+			if !ok || (ok && (kv.markClient[skvargs.ClientID]+1) == skvargs.SerialID) {
 				//not duplicate
 				if skvargs.OpType == PUT {
 					kv.markRequest[skvargs.Shard] = make(map[string]string, 0)
@@ -137,7 +161,7 @@ func (kv *ShardKV) Run() {
 			} // else: sliently ignore duplicate command.
 
 			// Prepare the reply.
-	        reply.WrongLeader = false
+			reply.WrongLeader = false
 			reply.OpType = skvargs.OpType
 			if _, ok := kv.markRequest[skvargs.Shard][skvargs.Key]; !ok {
 				reply.Err = ErrNoKey
@@ -157,14 +181,14 @@ func (kv *ShardKV) Run() {
 			//maxraftsize might be -1
 			if kv.rf.GetStateSize() > kv.maxraftstate && kv.maxraftstate >= 0 {
 				w := new(bytes.Buffer)
-	    		e := gob.NewEncoder(w)
-	    		e.Encode(kv.markClient)
-	    		e.Encode(kv.markRequest)
-	    		data := w.Bytes()
+				e := gob.NewEncoder(w)
+				e.Encode(kv.markClient)
+				e.Encode(kv.markRequest)
+				data := w.Bytes()
 
-	    		go kv.rf.Snapshot(data, index)
-	    		//kv.debug("Start snapshot for %v\n", index)
-			} 
+				go kv.rf.Snapshot(data, index)
+				//kv.debug("Start snapshot for %v\n", index)
+			}
 			kv.mu.Unlock()
 		}
 	}
@@ -189,7 +213,6 @@ func (kv *ShardKV) Kill() {
 	kv.rf.Kill()
 	// Your code here, if desired.
 }
-
 
 //
 // servers[] contains the ports of the servers in this group.
@@ -222,37 +245,101 @@ func (kv *ShardKV) Kill() {
 
 func (kv *ShardKV) Update() {
 	for {
-		go func() {
-			okconfig := make(chan shardmaster.Config, 0)
+		if kv.state == Working {
 			go func() {
-				okconfig <- kv.mck.Query(kv.LastConfigNum() + 1)
-			}()
-			select {
-				case ok := <- okconfig :
-					if ok.Num != (kv.LastConfigNum() + 1) ||  kv.state != Working {
+				okconfig := make(chan shardmaster.Config, 0)
+				go func() {
+					okconfig <- kv.mck.Query(kv.LastConfigNum() + 1)
+				}()
+				select {
+				case ok := <-okconfig:
+					if ok.Num != (kv.LastConfigNum()+1){
 						kv.mu.Lock()
-						kv.state = Working
+						for s, _ := range kv.configs[len(kv.configs) - 1].Shards {
+							kv.markShard[s] = Holding
+						}
 						kv.mu.Unlock()
 						time.Sleep(50 * time.Millisecond)
 					} else {
 						// need to reconfig
+
+						var newshards map[int]bool
 						kv.mu.Lock()
-						kv.state = ReConfig
-						kv.mu.Unlock()
-						recong := SKVArgs {
-							OpType : RECONFIG,
-							Config : ok,
+						for s, _ := range recong.Config.Shards {
+							newshards[s] = true
+							if _, ok := kv.markShard[s]; !ok {
+								kv.markShard[s] = Waiting
+							} else {
+								kv.markShard[s] = Holding
+							}
 						}
+
+						for s, _ := range kv.configs[len(kv.configs) - 1].Shards {
+							if _, ok := newshards[s]; !ok {
+								//server should send this shard to another server
+								kv.markShard[s] = Sending
+							} 
+						}
+						kv.mu.Unlock()
 						_, _, isLeader := kv.rf.Start(recong)
 						if isLeader == true {
-							kv.configs = append(kv.configs, ok)
-						} 
+							//should append in run()!
+							// do not modify myself in other func except for run()
+							//kv.configs = append(kv.configs, ok)
+						}
 					}
-				case <-time.After(50 * time.Millisecond) :
+				case <-time.After(50 * time.Millisecond):
+				}
+			}()
+		} else {
+			//send other's shards
+			//遍历所有shard，如果看到sending状态就发给别人
+			//维护一个变量，ready := true(完成config)
+			//如果有任何一个shard是sending或是waiting，ready = false
+			//遍历所有shard ready是true， 准备args调用raft start写进log
+			//
+			kv.mu.Lock()
+			ready := true
+			for s, st := range kv.markShard {
+				if st == Sending {
+					ready = false
+					server := kv.configs.Groups[st]
+					var servers []*labrpc.ClientEnd
+					for _, server_name := range server {
+						servers = append(servers, kv.make_end(server_name))
+					}
+					for _, s := range servers {
+						var reply SKVReply 
+						ok := s.Call("ShardKV.SendingShard", &args, &reply)
+						if ok && reply.WrongLeader == false && (reply.Err == OK || reply.Err == ErrNoKey) {
+							kv.markShard[s] = NotHoding
+						} else {
+							kv.markShard[s] = Sending
+						}
+					}	
+				}
+				if st == Waiting {
+					ready = false
+				}
 			}
-		}()
+
+			if ready == true {
+				server := make([]*labrpc.ClientEnd, 0)
+				args := SKVArgs {
+					OpType : RECONFIG,
+					ConfigNum : kv.LastConfigNum(),
+				}
+				kv.rf.Start(args)
+			}
+			kv.mu.Unlock()
+		}
+
 		time.Sleep(50 * time.Millisecond)
-	}	
+	}
+}
+
+func (kv *ShardKV) SendingShard(){
+
 }
 func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int, gid int, masters []*labrpc.ClientEnd, make_end func(string) *labrpc.ClientEnd) *ShardKV {
 	// call gob.Register on structures you want
@@ -280,6 +367,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
+	go kv.Update()
 
 	return kv
 }
