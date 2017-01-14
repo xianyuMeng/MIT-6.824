@@ -265,7 +265,7 @@ func (kv *ShardKV) Update() {
 
 						var newshards map[int]bool
 						kv.mu.Lock()
-						for s, _ := range recong.Config.Shards {
+						for s, _ := range ok.Shards {
 							newshards[s] = true
 							if _, ok := kv.markShard[s]; !ok {
 								kv.markShard[s] = Waiting
@@ -281,12 +281,6 @@ func (kv *ShardKV) Update() {
 							} 
 						}
 						kv.mu.Unlock()
-						_, _, isLeader := kv.rf.Start(recong)
-						if isLeader == true {
-							//should append in run()!
-							// do not modify myself in other func except for run()
-							//kv.configs = append(kv.configs, ok)
-						}
 					}
 				case <-time.After(50 * time.Millisecond):
 				}
@@ -300,21 +294,25 @@ func (kv *ShardKV) Update() {
 			//
 			kv.mu.Lock()
 			ready := true
-			for s, st := range kv.markShard {
+			for shard, st := range kv.markShard {
 				if st == Sending {
 					ready = false
-					server := kv.configs.Groups[st]
+					server := kv.configs[len(kv.configs) - 1].Groups[shard]
 					var servers []*labrpc.ClientEnd
 					for _, server_name := range server {
 						servers = append(servers, kv.make_end(server_name))
 					}
 					for _, s := range servers {
 						var reply SKVReply 
+						args := SendShard {
+							ConfigNum : kv.LastConfigNum(),
+							Shard : shard,
+						}
 						ok := s.Call("ShardKV.SendingShard", &args, &reply)
-						if ok && reply.WrongLeader == false && (reply.Err == OK || reply.Err == ErrNoKey) {
-							kv.markShard[s] = NotHoding
+						if ok && reply.WrongLeader == false && (reply.Err == OK || reply.Err == ErrNoKey) && reply.ConfigNum == kv.LastConfigNum() {
+							kv.markShard[shard] = NotHoding
 						} else {
-							kv.markShard[s] = Sending
+							kv.markShard[shard] = Sending
 						}
 					}	
 				}
@@ -324,7 +322,6 @@ func (kv *ShardKV) Update() {
 			}
 
 			if ready == true {
-				server := make([]*labrpc.ClientEnd, 0)
 				args := SKVArgs {
 					OpType : RECONFIG,
 					ConfigNum : kv.LastConfigNum(),

@@ -1,7 +1,4 @@
 package shardkv
-import (
-	"shardmaster"
-)
 //
 // Sharded key/value server.
 // Lots of replica groups, each running op-at-a-time paxos.
@@ -26,6 +23,10 @@ const (
 	RECONFIG Operation = iota
 )
 
+type SendShard struct {
+	ConfigNum int
+	Shard int
+}
 type Err string
 
 type SKVArgs struct {
@@ -47,6 +48,8 @@ type SKVReply struct {
 
 	ClientID int64
 	SerialID int
+
+	ConfigNum int
 }
 
 // Put or Append
