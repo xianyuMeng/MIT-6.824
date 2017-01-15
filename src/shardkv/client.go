@@ -72,9 +72,10 @@ func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 
 
 func (ck *Clerk) Get(key string) string {
-	args := SKVArgs{}
-	args.OpType = GET
-	args.Key = key
+	args := SKVArgs{
+		OpType : GET,
+		Key : key,
+	}
 
 	for {
 		shard := key2shard(key)

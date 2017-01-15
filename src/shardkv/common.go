@@ -1,4 +1,7 @@
 package shardkv
+import (
+	"shardmaster"
+)
 //
 // Sharded key/value server.
 // Lots of replica groups, each running op-at-a-time paxos.
@@ -21,18 +24,40 @@ const (
 	GET Operation = iota
 	APPEND Operation = iota
 	RECONFIG Operation = iota
+	READY Operation = iota
+	PULLSHARD Operation = iota
 )
 
+type PullOperation int
+const (
+	REJECT PullOperation = iota
+	DUPLICATE PullOperation = iota
+	DONE PullOperation = iota
+)
+type Op struct {
+	OpType 	Operation
+	Command interface{}
+}
 type SendShardArgs struct {
 	ConfigNum int
 	ShardKV map[string]string
 	Shard int
+	ReceiverGID int
+	SenderGID int
+	markClient map[int64]int
 }
 
 type SendShardReply struct {
 	Success bool
 	ConfigNum int
+	ShardKV  int
 }
+
+type AddShard struct {
+	Args SendShardArgs
+	Reply bool
+}
+
 type Err string
 
 type SKVArgs struct {
@@ -44,6 +69,9 @@ type SKVArgs struct {
 	SerialID int
 
 	ConfigNum int
+
+	//for reconfig
+	Config shardmaster.Config
 } 
 
 type SKVReply struct {
