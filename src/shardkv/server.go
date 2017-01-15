@@ -303,13 +303,14 @@ func (kv *ShardKV) Update() {
 						servers = append(servers, kv.make_end(server_name))
 					}
 					for _, s := range servers {
-						var reply SKVReply 
-						args := SendShard {
+						var reply SendShardReply 
+						args := SendShardArgs {
 							ConfigNum : kv.LastConfigNum(),
+							ShardKV : kv.markRequest[shard],
 							Shard : shard,
 						}
 						ok := s.Call("ShardKV.SendingShard", &args, &reply)
-						if ok && reply.WrongLeader == false && (reply.Err == OK || reply.Err == ErrNoKey) && reply.ConfigNum == kv.LastConfigNum() {
+						if ok && reply.Success == true && reply.ConfigNum == kv.LastConfigNum() {
 							kv.markShard[shard] = NotHoding
 						} else {
 							kv.markShard[shard] = Sending
@@ -335,8 +336,19 @@ func (kv *ShardKV) Update() {
 	}
 }
 
-func (kv *ShardKV) SendingShard(){
+func (kv *ShardKV) SendingShard(args *SendShardArgs, reply *SendShardReply) bool {
+	reply.Success = false
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
 
+	if args.ConfigNum != kv.LastConfigNum() {
+		return false
+	}
+
+	kv.markRequest[args.Shard] = args.ShardKV
+	reply.Success = true
+	reply.ConfigNum = kv.LastConfigNum()
+	return true
 }
 func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int, gid int, masters []*labrpc.ClientEnd, make_end func(string) *labrpc.ClientEnd) *ShardKV {
 	// call gob.Register on structures you want

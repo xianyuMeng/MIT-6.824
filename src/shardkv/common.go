@@ -23,9 +23,15 @@ const (
 	RECONFIG Operation = iota
 )
 
-type SendShard struct {
+type SendShardArgs struct {
 	ConfigNum int
+	ShardKV map[string]string
 	Shard int
+}
+
+type SendShardReply struct {
+	Success bool
+	ConfigNum int
 }
 type Err string
 
