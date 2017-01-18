@@ -40,8 +40,8 @@ type Clerk struct {
 	config   shardmaster.Config
 	make_end func(string) *labrpc.ClientEnd
 	// You will have to modify this struct.
-	ClientID int64
-	SerialID int
+	id int64
+	sid int
 }
 
 //
@@ -58,9 +58,38 @@ func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 	ck.sm = shardmaster.MakeClerk(masters)
 	ck.make_end = make_end
 	// You'll have to add code here.
-	ck.ClientID = nrand()
-	ck.SerialID = 0 
+	ck.id = nrand()
+	ck.sid = 0
 	return ck
+}
+
+func (ck *Clerk) Request(args RequestArgs) RequestReply {
+
+	args.Id = ck.id
+	args.Sid = ck.sid
+	ck.sid++
+	shard := key2shard(args.Key)
+	for {
+		gid := ck.config.Shards[shard]
+		if servers, ok := ck.config.Groups[gid]; ok {
+			// Try each server in the group.
+			for i := 0; i < len(servers); i++ {
+				server := ck.make_end(servers[i])
+				reply := RequestReply{}
+				ok := server.Call("ShardKV.Request", &args, &reply)
+				if ok && !reply.WrongLeader && (reply.Err != ErrWrongGroup) {
+					return reply
+				}
+				if ok && (reply.Err == ErrWrongGroup) {
+					// This is the wrong group.
+					break
+				}
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+		ck.config = ck.sm.Query(-1)
+	}
+
 }
 
 //
@@ -69,37 +98,16 @@ func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 // keeps trying forever in the face of all other errors.
 // You will have to modify this function.
 //
-
-
 func (ck *Clerk) Get(key string) string {
-	args := SKVArgs{
-		OpType : GET,
+	args := RequestArgs {
+		Op 	: "GET",
 		Key : key,
 	}
-
-	for {
-		shard := key2shard(key)
-		gid := ck.config.Shards[shard]
-		if servers, ok := ck.config.Groups[gid]; ok {
-			// try each server for the shard.
-			for si := 0; si < len(servers); si++ {
-				srv := ck.make_end(servers[si])
-				var reply SKVReply
-				ok := srv.Call("ShardKV.Exec", &args, &reply)
-				if ok && reply.WrongLeader == false && (reply.Err == OK || reply.Err == ErrNoKey) {
-					return reply.Value
-				}
-				if ok && (reply.Err == ErrWrongGroup) {
-					break
-				}
-			}
-		}
-		time.Sleep(100 * time.Millisecond)
-		// ask master for the latest configuration.
-		ck.config = ck.sm.Query(-1)
+	reply := ck.Request(args)
+	if reply.Err == ErrNoKey {
+		return ""
 	}
-
-	return ""
+	return reply.Value
 }
 
 //
@@ -107,41 +115,17 @@ func (ck *Clerk) Get(key string) string {
 // You will have to modify this function.
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	args := SKVArgs{}
-	args.Key = key
-	args.Value = value
-	if op == "PUT" {
-		args.OpType = PUT
+	args := RequestArgs {
+		Op 		: op,
+		Key 	: key,
+		Value 	: value,
 	}
-	if op == "APPEND" {
-		args.OpType = APPEND 
-	}
-
-	for {
-		shard := key2shard(key)
-		gid := ck.config.Shards[shard]
-		if servers, ok := ck.config.Groups[gid]; ok {
-			for si := 0; si < len(servers); si++ {
-				srv := ck.make_end(servers[si])
-				var reply SKVReply
-				ok := srv.Call("ShardKV.Exec", &args, &reply)
-				if ok && reply.WrongLeader == false && reply.Err == OK {
-					return
-				}
-				if ok && reply.Err == ErrWrongGroup {
-					break
-				}
-			}
-		}
-		time.Sleep(100 * time.Millisecond)
-		// ask master for the latest configuration.
-		ck.config = ck.sm.Query(-1)
-	}
+	ck.Request(args)
 }
 
 func (ck *Clerk) Put(key string, value string) {
-	ck.PutAppend(key, value, "Put")
+	ck.PutAppend(key, value, "PUT")
 }
 func (ck *Clerk) Append(key string, value string) {
-	ck.PutAppend(key, value, "Append")
+	ck.PutAppend(key, value, "APPEND")
 }

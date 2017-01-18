@@ -98,6 +98,7 @@ func TestJoinLeave(t *testing.T) {
 		ka[i] = strconv.Itoa(i) // ensure multiple shards
 		va[i] = randstring(5)
 		ck.Put(ka[i], va[i])
+		//fmt.Printf("%v\n", va[i])
 	}
 	for i := 0; i < n; i++ {
 		check(t, ck, ka[i], va[i])
@@ -109,6 +110,7 @@ func TestJoinLeave(t *testing.T) {
 		check(t, ck, ka[i], va[i])
 		x := randstring(5)
 		ck.Append(ka[i], x)
+		//fmt.Printf("%v\n", x)
 		va[i] += x
 	}
 
@@ -118,6 +120,7 @@ func TestJoinLeave(t *testing.T) {
 		check(t, ck, ka[i], va[i])
 		x := randstring(5)
 		ck.Append(ka[i], x)
+		//fmt.Printf("%v\n", x)
 		va[i] += x
 	}
 
